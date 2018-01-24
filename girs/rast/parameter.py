@@ -1,5 +1,5 @@
 import os
-
+import math
 import numpy as np
 from osgeo import gdal
 
@@ -27,13 +27,19 @@ class RasterParameters:
             self.number_of_bands, self.RasterXSize, self.RasterYSize, self.nodata, data_types,
             self.driverShortName, srs, self.geo_trans)
 
+    def get_coordinate_system(self):
+        return self.srs
+
+    def set_coordinate_system(self, srs):
+        self.srs = srs
+
     def check_value_length(self, v):
         n = self.number_of_bands
         try:
             if n < len(v):
                 v = v[:n]
             elif n > len(v):
-                v = v[-1] * (n - len(v))
+                v = v[:-1] + [v[-1]] * (n - len(v) + 1)
         except TypeError, te:
             v = [v] * n
         except:
@@ -56,9 +62,15 @@ class RasterParameters:
         x_max0, y_min0 = self.pixel_to_world(self.RasterXSize, self.RasterYSize)
         return x_min0, x_max0, y_min0, y_max0
 
-    def world_to_pixel(self, x, y, np_func=np.round):
-        return np_func(np.divide(x - self.geo_trans[0], self.geo_trans[1])).astype(np.int), \
-               np_func(np.divide(y - self.geo_trans[3], self.geo_trans[5])).astype(np.int)
+    def world_to_pixel(self, x, y):
+        """
+
+        :param x:
+        :param y:
+        :return:
+        """
+        return int(math.floor(float(x - self.geo_trans[0]) / self.geo_trans[1])),\
+               int(math.floor(float(y - self.geo_trans[3]) / self.geo_trans[5]))
 
     def extent_world_to_pixel(self, min_x, max_x, min_y, max_y):
         u_min, v_min = self.world_to_pixel(min_x, max_y)
@@ -95,11 +107,27 @@ class RasterParameters:
             array[i] = np.empty((self.RasterYSize, self.RasterXSize)) * value
         return array
 
+    def clip(self, x_min, x_max, y_min, y_max):
+        """
+
+        :param x_min:
+        :param x_max:
+        :param y_min:
+        :param y_max:
+        :return:
+        """
+        (u_min, u_max, v_min, v_max), geo_trans = self.extent_world_to_pixel(x_min, x_max, y_min, y_max)
+        return RasterParameters(u_max - u_min , v_max - v_min, geo_trans, self.srs, self.number_of_bands,
+                                self.nodata, self.data_types, self.driverShortName)
+
 
 def get_parameters(ds):
-    """
+    """Return the raster parameters defined in the dataset
+
     :param ds: dataset or filename
-    :return: RasterParameters object
+    :type ds: gdal.Dataset
+    :return: raster parameters
+    :rtype: RasterParameters
     """
     try:
         if ds.endswith('.zip'):
@@ -109,7 +137,8 @@ def get_parameters(ds):
         else:
             ds = gdal.Open(ds)
     except Exception:
-        pass
+        if isinstance(ds, RasterParameters):
+            return ds
     xs = ds.RasterXSize
     ys = ds.RasterYSize
     gt = ds.GetGeoTransform()

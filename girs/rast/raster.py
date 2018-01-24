@@ -1,27 +1,147 @@
-import operator
-import os
-import tarfile
-
+import zipfile
 import numpy as np
-from PIL import Image, ImageDraw
-from osgeo import gdal
-from osgeo import ogr, gdalnumeric
+import matplotlib.pyplot as plt
+from osgeo import gdal, gdal_array
 from osgeo.gdalconst import GA_ReadOnly, GA_Update
-from girs.util.raster import get_driver
+from girs.geom.envelope import merge_envelopes
 import parameter
-from gdals import gdal_merge
-
-'''
-See:
-http://www.gdal.org/gdal_utilities.html
-http://pcjericks.github.io_ex/py-gdalogr-cookbook/index.html
-https://pypi.python.org/pypi/GDAL/
-http://effbot.org/imagingbook/imagedraw.htm
-'''
-
 
 # ===================== use Python Exceptions =================================
 gdal.UseExceptions()
+
+
+# =============================================================================
+def driver_dictionary():
+    """Return the driver dictionary
+
+    The driver dictionary:
+        - key: source extension
+        - value: driver short name
+
+    :return: driver dictionary
+    :rtype: dict
+    """
+    drivers_dict = {}
+    for i in range(gdal.GetDriverCount()):
+        drv = gdal.GetDriver(i)
+        if drv.GetMetadataItem(gdal.DCAP_RASTER):
+            extensions = drv.GetMetadataItem(gdal.DMD_EXTENSIONS)
+            extensions = extensions.split() if extensions else [None]
+            for ext in extensions:
+                if ext:
+                    if ext.startswith('.'):
+                        ext = ext[1:]
+                    ext = ext.lower()
+                    for ext1 in [e for e in ext.split('/')]:
+                        if ext1 not in drivers_dict:
+                            drivers_dict[ext1] = []
+                        drivers_dict[ext1].append(drv.ShortName)
+                else:
+                    if None not in drivers_dict:
+                        drivers_dict[None] = []
+                    drivers_dict[None].append(drv.ShortName)
+    return drivers_dict
+
+
+def get_driver(filename=None, driver_short_name=None):
+    """Return a driver.
+
+    If driver_short_name is given, return the corresponding driver.
+    filename can be 'MEM' or a file name. If a file name is given, guess
+    the driver, returning it only when the correspondence is one to one,
+    else return None.
+
+    Filename suffixes, which should work:
+    ace2: ACE2, asc: AAIGrid, bin: NGSGEOID, blx: BLX, bmp: BMP, bt: BT, cal: CALS, ct1: CALS, dat: ZMap, ddf: SDTS,
+    dem: USGSDEM, dt0: DTED, dt1: DTED, dt2: DTED, e00: E00GRID, gen: ADRG, gff: GFF, grb: GRIB, grc: NWT_GRC,
+    gsb: NTv2, gtx: GTX, gxf: GXF, hdf: HDF4, hdf5: HDF5, hf2: HF2, hgt: SRTMHGT, jpeg: JPEG, jpg: JPEG, kea: KEA,
+    kro: KRO, lcp: LCP, map: PCRaster, mem: JDEM, mpl: ILWIS, n1: ESAT, nat: MSGN, ntf: NITF, pix: PCIDSK, png:
+    PNG, pnm: PNM, ppi: IRIS, rda: R, rgb: SGI, rik: RIK, rst: RST, rsw: RMF, sdat: SAGA, tif: GTiff, tiff: GTiff,
+    toc: RPFTOC, vrt: VRT, xml: ECRGTOC, xpm: XPM, xyz: XYZ,
+
+    Filenames with ambiguous suffixes:
+    gif: GIF, BIGGIF
+    grd: GSAG, GSBG, GS7BG, NWT_GRD
+    hdr: COASP, MFF, SNODAS
+    img: HFA, SRP
+    nc: GMT, netCDF
+    ter: Leveller, Terragen
+
+    Without suffix: SAR_CEOS, CEOS, JAXAPALSAR, ELAS, AIG, GRASSASCIIGrid, MEM, BSB, DIMAP, AirSAR, RS2, SAFE,
+    HDF4Image, ISIS3, ISIS2, PDS, VICAR, TIL, ERS, L1B, FIT, INGR, COSAR, TSX, MAP, KMLSUPEROVERLAY, SENTINEL2, MRF,
+    DOQ1, DOQ2, GenBin, PAux, MFF2, FujiBAS, GSC, FAST, LAN, CPG, IDA, NDF, EIR, DIPEx, LOSLAS, CTable2, ROI_PAC, ENVI,
+    EHdr, ISCE, ARG, BAG, HDF5Image, OZI, CTG, DB2ODBC, NUMPY
+
+    :param filename:
+    :param driver_short_name:
+    :return:
+    """
+    if driver_short_name:
+        driver = gdal.GetDriverByName(driver_short_name)
+        if not driver:
+            raise ValueError('Could not find driver for short name {}'.format(driver_short_name))
+    elif not filename:
+        driver = gdal.GetDriverByName('MEM')
+    else:
+        try:
+            driver = gdal.IdentifyDriver(filename)
+        except RuntimeError:
+            driver = None
+        if not driver:
+            drivers_dict = driver_dictionary()
+            try:
+                driver_short_name = drivers_dict[filename.split('.')[-1]]
+                if len(driver_short_name) == 1:
+                    driver = gdal.GetDriverByName(driver_short_name[0])
+                else:
+                    raise ValueError('Ambiguous file name {} with possible drivers: {}'.format(
+                        filename, ', '.join(driver_short_name)))
+            except KeyError:
+                raise ValueError('Could not find driver for file {}'.format(filename))
+    return driver
+
+
+# =============================================================================
+class RasterFilename(object):
+    def __init__(self, filename):
+        self.filename = filename
+
+    def get_filename(self):
+        return self.filename
+
+    def get_member(self):
+        return self.filename
+
+    def is_compressed(self):
+        return False
+
+
+class RasterGzipFilename(RasterFilename):
+    def __init__(self, filename):
+        super(RasterGzipFilename, self).__init__(filename)
+
+    def get_member(self):
+        return self.filename[:-3]
+
+    def is_compressed(self):
+        return True
+
+
+class RasterZipFilename(RasterFilename):
+    def __init__(self, filename, member):
+        super(RasterZipFilename, self).__init__(filename)
+        if not member:
+            with zipfile.ZipFile(filename) as zf:
+                members = zf.namelist()
+                assert len(members) == 1
+                member = members[0]
+        self.member = member
+
+    def get_member(self):
+        return self.member
+
+    def is_compressed(self):
+        return True
 
 
 # =============================================================================
@@ -29,138 +149,363 @@ gdal.UseExceptions()
 # =============================================================================
 class Raster(object):
 
-    def __init__(self, filename):
-        """
-        filename (str): 'MEM' or file name
-        """
-        self.dataset = None
-        if filename.endswith('.zip'):
-            self.filename = filename[:-4]
-            self.compressed = '.zip'
-        elif filename.endswith('.gz'):
-            self.filename = filename[:-3]
-            self.compressed = '.gz'
-        else:
-            self.filename = filename
-            self.compressed = None
-
-    def __repr__(self):
-        return self.filename + ' ' + self.get_parameters().__repr__()
-
-    def info(self, **kwargs):
-        return info(self.dataset, **kwargs)
-
-    def get_filename(self):
-        return self.filename
-
-    def get_compressed_filename(self):
-        return self.filename + self.compressed if self.compressed else self.filename
-
-    def is_compressed(self):
-        return self.compressed is not None
-
-    def get_parameters(self):
-        return parameter.get_parameters(self.dataset)
-
-    def copy(self, name, driver_short_name='GTiff'):
-        return copy(self, name, driver_short_name)
-
-    def get_nodata(self, band_number=None):
-        if band_number:
-            try:
-                n = len(band_number)
-                return [self.dataset.GetRasterBand(i).GetNoDataValue() for i in range(n)]
-            except:
-                return self.dataset.GetRasterBand(band_number).GetNoDataValue()
-        else:
-            return [self.dataset.GetRasterBand(i).GetNoDataValue() for i in range(1, self.dataset.RasterCount+1)]
-
-    def get_arrays(self):
-        n_cols, n_rows = self.get_raster_size()
-        n_bands = self.get_number_of_bands()
-        arrays = np.empty((n_bands, n_rows, n_cols))
-        for i in range(n_bands):
-            arrays[i] = self.get_array(i+1)
-        return arrays
-
-    def get_array(self, band_number=1, *args):
-        """
-            u_min, v_min, u_size, v_size = args[0], args[1], args[2], args[3]
-        """
-        if not args:
-            u_min, v_min = 0, 0
-            u_size, v_size = self.dataset.RasterXSize, self.dataset.RasterYSize
-        else:
-            u_min, v_min, u_size, v_size = args[0], args[1], args[2], args[3]
-
-        return self.dataset.GetRasterBand(band_number).ReadAsArray(u_min, v_min, u_size, v_size)
-
-    def get_masked_array(self, band_number=1, *args):
-        arr = self.get_array(band_number, *args)
-        arr[arr==self.get_nodata()] = np.nan
-        return np.ma.array(arr, mask=np.isnan(arr))
-
-    def get_geotransform(self):
-        return self.dataset.GetGeoTransform()
-
-    def transform(self, filename, srs, **kwargs):
+    def __init__(self, filename, member=None):
         """
 
         :param filename:
-        :param srs:
-        :param kwargs:
-            format: driver short name
+        :param member:
+        """
+        self.dataset = None
+        if filename is None:
+            filename = ''
+
+        fnl = filename.lower()
+        if fnl.endswith('.zip'):
+            self.filename = RasterZipFilename(filename, member)
+        elif fnl.endswith('.gz'):
+            self.filename = RasterGzipFilename(filename)
+        else:
+            self.filename = RasterFilename(filename)
+
+    def __repr__(self):
+        return self.get_filename() + ' ' + self.get_parameters().__repr__()
+
+    def info(self, **kwargs):
+        """Return information on a dataset
+        ::
+
+            return gdal.Info(self.dataset, **kwargs)
+
+        :param kwargs: see gdal.Info
+        :return: information on a dataset
+        :rtype: str
+        """
+        return gdal.Info(self.dataset, **kwargs)
+
+    def show(self, band_number=1, mask=True, scale=False, plot=True):
+        """
+
+        :param band_number:
+        :param mask:
+        :param scale:
         :return:
         """
-        return RasterModifier(filename, gdal.Warp(filename, self.dataset, dstSRS=srs, **kwargs))
+        array = self.get_array(band_number, mask=mask, scale=scale)
+        if np.ma.all(array) is np.ma.masked:
+            print 'Empty array: nothing to show'
+        else:
+            plt.imshow(array)
+            if plot:
+                plt.show()
 
+    def plot(self, axes_dict=None, mask=True, scale=False, plot=True):
+        """
 
-    # USE gdal.Warp
-    # def gdalwarp(self, dst_filename, **kwargs):
-    #     """
-    #     """
-    #     cmd = 'gdalwarp'
-    #
-    #     for k, v in kwargs.items():
-    #         cmd += ' -' + k + ' ' + v
-    #
-    #     cmd += ' ' + '"' + self.filename + '" "' + dst_filename + '"'
-    #
-    #     process = subprocess.Popen(cmd, shell=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
-    #     stdout = ''.join(process.stdout.readlines())
-    #     stderr = ''.join(process.stderr.readlines())
-    #
-    #     if len(stderr) > 0:
-    #         print str(stdout)
-    #         raise IOError(stderr)
+        :param axes_dict: dictionary with ax as key and list of bands as plot
+        :param mask:
+        :param scale:
+        :param plot:
+        :return:
+        """
+        for ax, band_number in axes_dict.items():
+            if isinstance(band_number, (int, long)):
+                array = self.get_array(band_number, mask=mask, scale=scale)
+            else:
+                array = self.get_arrays(band_number, mask=mask, scale=scale)
+            ax.imshow(array)
+        if plot:
+            plt.show()
 
-    def get_coordinate_system(self):
-        return self.dataset.GetProjection()
+    def is_compressed(self):
+        """Return True is the file is compressed
 
-    def get_number_of_bands(self):
-        return self.dataset.RasterCount
+        Valid compressions are gzip (.gz) and zip (.zip)
 
-    def get_band(self, band_number):
-        return self.dataset.GetRasterBand(band_number)
+        :return: True is the file is compressed
+        """
+        return self.filename.is_compressed()
+
+    def get_filename(self):
+        """Return the file name
+
+        :return: file name
+        :rtype: str
+        """
+        return self.filename.get_filename()
+
+    def get_rastername(self):
+        """Return the raster name
+
+        Raster name may be different of file name in case of zipped files
+
+        :return: file name
+        :rtype: str
+        """
+        return self.filename.get_member()
+
+    def get_parameters(self):
+        """Return the raster parameters defined in the dataset
+
+        :return: raster parameters
+        :rtype: RasterParameters
+        """
+        return parameter.get_parameters(self.dataset)
 
     def get_raster_size(self):
+        """Return (number of columns, number of rows)
+
+        Return the x- and y-sizes as tuple (number of columns, number of rows)
+
+        :return: number of columns and rows
+        :rtype: (int, int)
+        """
         return self.dataset.RasterXSize, self.dataset.RasterYSize
 
+    def get_nodata(self, band_number=1):
+        """Return nodata or list of nodata
+
+        If band_number is 'all' or a list of band  numbers, return a list with one nodata for each band.
+        If band_number is a number, return the nodata value
+
+        :param band_number: 'all', band number or list of band numbers
+        :type band_number: int or list of int
+        :return: nodata or list of nodata
+        :rtype: raster type or list of raster types
+        """
+        if band_number == 'all':
+            band_number = range(1, self.get_band_count() + 1)
+        try:
+            return [self.dataset.GetRasterBand(i).GetNoDataValue() for i in band_number]
+        except TypeError:
+            return self.dataset.GetRasterBand(band_number).GetNoDataValue()
+
+    def get_extent(self, scale=0.0):
+        """Return the raster extent in world coordinates.
+
+        :return: (x_min, x_max, y_min, y_max)
+        :rtype:
+        """
+        xmin, xmax, ymin, ymax = extent_pixel_to_world(self.get_geotransform(),
+                                                       self.dataset.RasterXSize, self.dataset.RasterYSize)
+        if scale and scale != 0.0:
+            dx, dy = xmax - xmin, ymax - ymin
+            xmin -= dx * scale
+            xmax += dx * scale
+            ymin -= dy * scale
+            ymax += dy * scale
+        return xmin, xmax, ymin, ymax
+
+    def copy(self, name='', driver_short_name=None):
+        """Return a copy of this raster
+
+        Creates a new RasterUpdate instance using the parameters of this raster
+
+        :param name:
+        :param driver_short_name:
+        :return:
+        """
+        return copy(self, name, driver_short_name)
+
+    def get_band_count(self):
+        """Return the number of bands
+
+        :return: number of bands
+        :rtype: int
+        """
+        return self.dataset.RasterCount
+
+    def get_band_data_type(self, band_number=1):
+        """Return data type or list of data types
+
+        If band_number is 'all' or a list of band  numbers, return a list with one data type for each band.
+        If band_number is a number, return the data type 
+
+        :param band_number: 'all', band number or list of band numbers
+        :type band_number: int or list of int
+        :return: data type or list of data types
+        :rtype: int or list of int
+        """
+        if band_number == 'all':
+            band_number = range(1, len(band_number) + 1)
+        try:
+            return [self.dataset.GetRasterBand(i).DataType for i in band_number]
+        except TypeError:
+            return self.dataset.GetRasterBand(band_number).DataType
+
+    def get_band(self, band_number=1):
+        """Return a raster band
+
+        :param band_number: band number. Default band_number=1
+        :return: raster band
+        :rtype: gdal.Band
+        """
+        return self.dataset.GetRasterBand(band_number)
+
+    def array_block(self, band_number=1):
+        """Loop through an array and yields i_row, i_col, n_rows, n_cols, array block
+
+        It is 5x slower than get_array
+
+        :return: i_row, i_col, n_rows, n_cols, block
+        """
+        band = self.dataset.GetRasterBand(band_number)
+        row_size, col_size = band.YSize, band.XSize
+        block_sizes = band.GetBlockSize()
+        row_block_size, col_block_size = block_sizes[1], block_sizes[0]
+        col_range = range(0, col_size, col_block_size)
+        for i_row in range(0, row_size, row_block_size):
+            n_rows = row_block_size if i_row + row_block_size < row_size else row_size - i_row
+            for i_col in col_range:
+                n_cols = col_block_size if i_col + col_block_size < col_size else col_size - i_col
+                yield i_row, i_col, n_rows, n_cols, band.ReadAsArray(i_col, i_row, n_cols, n_rows)
+
+    def get_array(self, band_number=1, col0=0, row0=0, n_cols=None, n_rows=None, mask=False, scale=False):
+        """Return the raster band array
+
+        If band number is a number, return a 2D-array, else if band number is a list/tuple of numbers, return a 3D-array
+        If mask is True, returned a numpy masked array
+        If scale is True, scale the raster: (array - min)/(max - min)
+
+        :param band_number: band number. Default band_number=1
+        :param col0: starting x pixel
+        :type col0: int
+        :param row0: starting y pixel
+        :type row0: int
+        :param n_cols: number of x-pixels
+        :type n_cols: int
+        :param n_rows: number of y-pixels
+        :type n_rows: int
+        :return: 2D- or 3D-array
+        :rtype: numpy.ndarray
+        """
+        if not n_cols:
+            n_cols = self.dataset.RasterXSize
+        if not n_rows:
+            n_rows = self.dataset.RasterYSize
+        if band_number == 'all':
+            band_number = range(1, self.get_band_count() + 1)
+        try:
+            arrays = np.empty((len(band_number), n_rows, n_cols))
+            for i, bn in enumerate(band_number):
+                arrays[i] = self.get_array(bn, col0=col0, row0=row0, n_cols=n_cols, n_rows=n_rows,
+                                           mask=mask, scale=scale)
+            return arrays
+        except TypeError:
+            array = self.dataset.GetRasterBand(band_number).ReadAsArray(col0, row0, n_cols, n_rows)
+            if mask:
+                nodata = self.get_nodata(band_number=band_number)
+                array = np.ma.array(array, mask=(array == nodata))
+            if scale:
+                array = scale_array(array)
+            return array
+
+    def get_array_full(self, value=0, **kwargs):
+        """
+
+        :param value:
+        :type value: int or list
+        :param kwargs:
+            :key dtype: numpy dtype, default raster type converted into dtype
+        :return: array
+        """
+        n_cols, n_rows = self.get_raster_size()
+        dtype = kwargs.pop('dtype', gdal_array.GDALTypeCodeToNumericTypeCode(self.get_band_data_type()))
+        if isinstance(value, (list, tuple)):
+            n_bands = len(value)
+            if value.count(0) == len(value):
+                return np.zeros((n_bands, n_rows, n_cols), dtype)
+            elif value.count(None) == len(value):
+                return np.empty((n_bands, n_rows, n_cols), dtype)
+            else:
+                array = np.empty((n_bands, n_rows, n_cols), dtype)
+                for i in range(n_bands):
+                    array[i] = np.full((n_rows, n_cols), value[i], dtype)
+                return array
+        else:
+            if value == 0:
+                return np.zeros((n_rows, n_cols), dtype)
+            elif value is None:
+                return np.empty((n_rows, n_cols), dtype)
+            else:
+                return np.full((n_rows, n_cols), value, dtype)
+
+    def get_geotransform(self):
+        """Return geo transform.
+
+        :return:
+        """
+        return self.dataset.GetGeoTransform()
+
+    def transform(self, **kwargs):
+        """Return a raster in the given coordinate system
+
+        Create an instance of RasterUpdate in 'MEM':
+            - If filename and driver are unset
+            - If driver is 'MEM'
+
+        :param kwargs:
+            :key epsg: (str)
+            :key proj4: (str)
+            :key wkt: (str)
+            :key output_raster: full path file name, any string if drivername='mem', or None
+            :key drivername: short driver name
+        :return:
+        """
+        output_raster = kwargs.pop('output_raster', None)
+        drivername = kwargs.pop('drivername', 'Memory')
+        if output_raster:
+            target = output_raster
+        else:
+            target = drivername
+        srs = kwargs.pop('wkt', kwargs.pop('proj4', None))
+        if not srs:
+            srs = 'epsg:{}'.format(kwargs.pop('epsg', None))
+        return RasterUpdate(gdal.Warp(destNameOrDestDS=target, srcDSOrSrcDSTab=self.dataset, dstSRS=srs, **kwargs))
+
+    def get_coordinate_system(self):
+        """Return the coordinate system
+
+        :return:
+        """
+        return self.dataset.GetProjection()
+
     def get_pixel_size(self):
+        """Return pixel sizes (x, y): (column width, row height)
+
+        :return: pixel sizes (x, y): (column width, row height)
+        :rtype: tuple
+        """
         return pixel_size(self.get_geotransform())
 
-    def get_extent(self):
-        return extent_pixel_to_world(self.get_geotransform(), self.dataset.RasterXSize, self.dataset.RasterYSize)
-
     def world_to_pixel(self, x, y):
+        """Transform world to pixel coordinates
+
+        :param x:
+        :param y:
+        :return: pixel coordinates of (x, y)
+        :rtype: list of int
+        """
         return world_to_pixel(self.get_geotransform(), x, y)
 
     def extent_world_to_pixel(self, min_x, max_x, min_y, max_y):
+        """Return extent in pixel coordinates
+
+        :param min_x: minimum x (minimum longitude)
+        :type min_x: float
+        :param max_x: maximum x (maximum longitude)
+        :type max_x: float
+        :param min_y: minimum x (minimum latitude)
+        :type min_y: float
+        :param max_y: maximum x (maximum latitude)
+        :type max_y: float
+        :return: (u_min, u_max, v_min, v_max)
+        :rtype: tuple
+        """
         return extent_world_to_pixel(self.get_geotransform(), min_x, max_x, min_y, max_y)
 
     def pixel_to_world(self, x, y):
-        """
-        Return the top-left world coordinate of the pixel
+        """Return the top-left world coordinate of the pixel
+
         :param x:
         :param y:
         :return:
@@ -168,108 +513,50 @@ class Raster(object):
         return pixel_to_world(self.get_geotransform(), x, y)
 
     def get_centroid_world_coordinates(self):
+        """Return the raster centroid in world coordinates
+
+        :return:
+        """
         x_size, y_size = self.get_pixel_size()
         return get_centroid_world_coordinates(self.get_geotransform(),
                                               self.dataset.RasterXSize, self.dataset.RasterYSize,
                                               x_size, y_size)
 
-    # def get_utm_zone(self):
-    #     # TODO: remove it
-    #     prj = self.dataset.GetProjection()
-    #     srs = osr.SpatialReference()
-    #     srs.ImportFromWkt(prj)
-    #     if srs.IsGeographic() and srs.GetAttrValue('GEOGCS') == 'WGS 84':
-    #         lon, lat = self.get_centroid_world_coordinates()
-    #         return int(1+(lon+180.0)/6.0), lat >= 0.0
-    #     else:
-    #         return 0, None
-
-    def get_band_data_types(self):
-        ds = self.dataset
-        return [ds.GetRasterBand(i).DataType for i in range(1, ds.RasterCount+1)]
-
-    def get_band_data_type(self, band_number=1):
-        return self.dataset.GetRasterBand(band_number).DataType
-
-    def clip_by_extent(self, **kwargs):
-        """
-        Args:
-            raster_in (string):
-
-            kwargs:
-                'extent' (list): [x_min, x_max, y_min, y_max]
-                'layers' (string / Layers): layers file name or Layers object used to set the extent
-                'rasters' (string / Layers): rasters file name or Raster object used to set the extent
-                'layer_number' (int): layer number. Default is the first layer (0)
-                'scale' (float): used in order to scale the extent (scale > 1 creates a buffer)
-                'driver' (string): driver name
-                'burn_value' (int): burn_value. Default is 1
-                'output_raster' (string): filename of the rasters.
-        return:
-            If 'output_raster' is not set in kwargs, return the new rasters dataset as 'MEM' driver, otherwise None
-        """
-        from girs.rastfeat import clip
-        return clip.clip_by_extent(self, **kwargs)
-
-    def clip_by_vector(self, **kwargs):
-        """
-        Args:
-            raster_in (string):
-            layers_in (string / Layers): layers file name or Layers object. The geometry must be line or polygon
-            layer_number (int): layer number. Default is the first layer (0)
-            scale (float): to scale the bounding box of the features
-            driver (string): driver name
-            burn_value (int): burn_value. Default is 1
-            output_raster (string): filename of the rasters.
-            nodata (int/float): nodata
-
-        return:
-            If output is not set in kwargs, return the new rasters dataset as MEM driver, otherwise None
-        """
-        from girs.rastfeat import clip
-        return clip.clip_by_vector(self, **kwargs)
-
-    def clip_arrays(self, u0, v0, nu, nv):
-        """Clip the all rasters and return a ndarray
-        """
-        # gdalnumeric.LoadFile does not work with 'MEM'
-        # arr0 = gdalnumeric.LoadFile(self.name, u0, v0, nu, nv)
-        nb = self.get_number_of_bands()
-        if nb == 1:
-            return self.clip_array(1, u0, v0, nu, nv)
-        else:
-            arr = np.empty((nb, nv, nu))
-            for ib in range(0, nb):
-                arr[ib] = self.clip_array(ib + 1, u0, v0, nu, nv)
-            return arr  # ndarray
-
-    def clip_array(self, band_number=1, u_min=0, v_min=0, u_width=None, v_height=None):
-        return self.dataset.GetRasterBand(band_number).ReadAsArray(u_min, v_min, u_width, v_height)
-
     def resample(self, pixel_sizes, resample_alg=gdal.GRA_NearestNeighbour, **kwargs):
-        import resample
-        return resample.resample(self, pixel_sizes, resample_alg, **kwargs)
+        """Resample the raster
+
+        :param pixel_sizes:
+        :param resample_alg:
+        :param kwargs:
+        :return:
+        """
+        from girs.rast.proc import resample
+        return resample(self, pixel_sizes, resample_alg, **kwargs)
+
+    def strip(self):
+        from girs.rast.proc import strip
+        return strip(self)
 
 
 # =============================================================================
-# =============================================================================
-# =============================================================================
-# =============================================================================
-# =============================================================================
+# RasterReader
 # =============================================================================
 class RasterReader(Raster):
 
-    def __init__(self, filename):
-        super(RasterReader, self).__init__(filename)
+    def __init__(self, filename, member=''):
+        """Filename, also als .zip or .gz. In case of zip-files, a member name
+        can be also be given in case there are more then one raster files in the
+        zip file
+        :param filename:
+        :param member:
         """
-        name (str): 'MEM' or file name
-        """
-        if self.compressed == '.zip':
-            self.dataset = gdal.Open('/vsizip/' + self.get_compressed_filename(), GA_ReadOnly)
-        elif self.compressed == '.gz':
-            self.dataset = gdal.Open('/vsigzip/' + self.get_compressed_filename(), GA_ReadOnly)
-        else:
-            self.dataset = gdal.Open(self.filename, GA_ReadOnly)
+        super(RasterReader, self).__init__(filename, member=member)
+        fnl = filename.lower()
+        if fnl.endswith('.zip'):  # /vsizip/path/to/the/file.zip/path/inside/the/zip/file
+            filename = '/vsizip/' + filename + '/' + member
+        elif fnl.endswith('.gz'):  # /vsigzip/path/to/the/file.gz
+            filename = '/vsigzip/' + filename
+        self.dataset = gdal.Open(filename, GA_ReadOnly)
 
 
 class RasterEditor(Raster):
@@ -277,7 +564,13 @@ class RasterEditor(Raster):
     def __init__(self, filename):
         super(RasterEditor, self).__init__(filename)
 
-    def set_nodata(self, nodata=None, band_numbers=None):
+    def set_nodata(self, nodata, band_number=1):
+        """Set nodata
+
+        :param nodata:
+        :param band_number:
+        :return:
+        """
         if isinstance(nodata, basestring):
             nodata = [nodata]
         else:
@@ -285,73 +578,128 @@ class RasterEditor(Raster):
                 len(nodata)
             except TypeError:
                 nodata = [nodata]
-        if not band_numbers:
-            band_numbers = range(1, self.dataset.RasterCount + 1)
 
-        nodata = nodata + nodata[-1:] * (len(band_numbers) - len(nodata))
-
-        for i, nd in enumerate(nodata):
-            self.dataset.GetRasterBand(i+1).SetNoDataValue(nodata[i])
+        try:
+            band_number_nodata = {bn: nodata[i] for i, bn in enumerate(band_number)}
+        except TypeError:
+            band_number = [band_number]
+            band_number_nodata = {bn: nodata[i] for i, bn in enumerate(band_number)}
+        for bn in band_number:
+            self.dataset.GetRasterBand(bn).SetNoDataValue(band_number_nodata[bn])
         self.dataset.FlushCache()
 
     def set_array(self, array, band_number=1):
-        """
+        """Set array
+
+        :param array:
+        :param band_number:
+        :return:
         """
         result = self.dataset.GetRasterBand(band_number).WriteArray(array)
         self.dataset.FlushCache()
         return result
 
     def set_projection(self, srs):
+        """Set projection
+
+        :param srs:
+        :return:
+        """
         result = self.dataset.SetProjection(srs)
         self.dataset.FlushCache()
         return result
 
-
-class RasterModifier(RasterEditor):
-
-    def __init__(self, filename, dataset=None):
-        super(RasterModifier, self).__init__(filename)
-
+    def set_geotransform(self, x_min=0.0, x_pixel_size=1.0, x_rot=0.0, y_max=0.0, y_rot=0.0, y_pixel_size=1.0):
         """
-        name (str): 'MEM' or file name
+        :param x_min: x location of East corner of the raster
+        :param x_pixel_size: pixel width
+        :param x_rot: x pixel rotation, usually zero
+        :param y_max: y location of North corner of the raster
+        :param y_rot: x pixel rotation, usually zero
+        :param y_pixel_size: negative value of pixel height
+        :return: True if setting was successful else gdal.CE_Failure
         """
-        if not dataset:
-            if self.compressed == '.zip':
-                self.dataset = gdal.Open('/vsizip/' + self.get_compressed_filename(), GA_Update)
-            elif self.compressed == '.gz':
-                self.dataset = gdal.Open('/vsigzip/' + self.get_compressed_filename(), GA_Update)
+        result = self.dataset.SetGeoTransform(x_min, x_pixel_size, x_rot, y_max, y_rot, y_pixel_size)
+        self.dataset.FlushCache()
+        return True if result == gdal.CE_None else gdal.CE_Failure
+
+
+class RasterUpdate(RasterEditor):
+
+    def __init__(self, source, drivername=None):
+        """
+        If source is another Raster or a raster dataset, create a copy of the dataset in 'MEM'
+        If source is a filename, open the file in update modus
+
+        :param source: raster filename, Raster, or raster dataset
+        """
+        try:
+            super(RasterUpdate, self).__init__(source)
+            # No support for zip-files
+            if source.lower().endswith('.gz'):  # /vsigzip/path/to/the/file.gz
+                source = '/vsigzip/' + source
+            if not drivername or drivername == 'MEM':
+                drv = gdal.GetDriverByName('MEM')
+                drv
             else:
-                self.dataset = gdal.Open(self.filename, GA_Update)
-        else:
-            self.dataset = dataset
+                raise ValueError('No filename defined')
+
+            self.dataset = gdal.Open(source, GA_Update)
+        except AttributeError:
+            super(RasterUpdate, self).__init__('')
+            try:
+                self.dataset = gdal.GetDriverByName('MEM').CreateCopy('', source.dataset)
+            except AttributeError:
+                self.dataset = gdal.GetDriverByName('MEM').CreateCopy('', source)
+            self.filename = ''
 
 
 class RasterWriter(RasterEditor):
 
-    def __init__(self, filename, raster_parameters):
-        super(RasterWriter, self).__init__(filename)
+    def __init__(self, raster_parameters, source=None, drivername=None):
+        """Create an instance of RasterWriter in 'MEM':
+            - If source and driver are not given
+            - If drivername is 'MEM'
+
+        :param raster_parameters:
+        :param source:
+        :param drivername: gdal driver short name or an instance of gdal.Driver
         """
-        name (str): 'MEM' or file name
-        """
-        driver_short_name = raster_parameters.driverShortName
-        if driver_short_name:
-            drv = gdal.GetDriverByName(driver_short_name)
-        else:
-            if self.filename.upper() == 'MEM':
+        super(RasterWriter, self).__init__(source)
+        drv = None
+        if not source:
+            if not drivername or drivername == 'MEM':
                 drv = gdal.GetDriverByName('MEM')
             else:
-                drv = gdal.IdentifyDriver(filename)
+                raise ValueError('No filename defined')
+        elif source:
+            if not drivername:
+                drv = get_driver(source)
+            else:
+                try:
+                    drv = gdal.GetDriverByName(drivername)
+                except TypeError, e:
+                    if not isinstance(drivername, gdal.Driver):
+                        raise e
+                    drv = drivername
 
         n_bands = raster_parameters.number_of_bands
         try:
-            self.dataset = drv.Create(self.filename, raster_parameters.RasterXSize, raster_parameters.RasterYSize,
-                                      n_bands, raster_parameters.data_types[0])
+            dt = raster_parameters.data_types[0]
+        except TypeError:
+            dt = raster_parameters.data_types
+        try:
+            filename = self.get_filename()
+            self.dataset = drv.Create(filename, raster_parameters.RasterXSize, raster_parameters.RasterYSize,
+                                      n_bands, dt)
         except RuntimeError, e:
-            raise RuntimeError('raster {} is being eventually used (locked)'.format(self.filename))
+            msg = '{} or raster {} is being eventually used (locked)'.format(e.message, self.filename)
+            raise RuntimeError(msg)
         self.dataset.SetGeoTransform(raster_parameters.geo_trans)
         self.dataset.SetProjection(raster_parameters.srs)
+        raster_parameters.set_nodata(raster_parameters.nodata)
         for i in range(n_bands):
-            if raster_parameters.nodata[i]:
+            if raster_parameters.nodata[i] is not None:
                 rb_out = self.dataset.GetRasterBand(i+1)
                 rb_out.SetNoDataValue(raster_parameters.nodata[i])
                 rb_out.FlushCache()
@@ -363,6 +711,14 @@ class RasterWriter(RasterEditor):
 
 
 def info(raster, **kwargs):
+    """Return raster information
+
+
+
+    :param raster:
+    :param kwargs:
+    :return:
+    """
     try:
         raster = RasterReader(raster)
         dataset = raster.dataset
@@ -374,24 +730,187 @@ def info(raster, **kwargs):
     return gdal.Info(dataset, **kwargs)
 
 
+def create_gifs(output_filename, *args, **kwargs):
+    """
+
+    :param self:
+    :param output_filename:
+    :param args:
+    :param kwargs:
+        :key mask: default True
+        :key scale: default False
+        :key band_number:
+        :key nodata:
+        :key cmap_name: default Blues
+        :key cmap: default Blues
+        :key resize: default 1
+    :return:
+    """
+    from PIL import Image
+    import matplotlib as mpl
+
+    resize = kwargs.pop('resize', 1)
+    cm = kwargs.pop('cmap', mpl.cm.get_cmap(kwargs.pop('cmap_name', 'plasma_r')))
+    images = list()
+    a_max, a_min = None, None
+    for i, arg in enumerate(args):
+        try:
+            r = RasterReader(arg)
+        except AttributeError:
+            r = arg
+        array = r.get_array(mask=True, scale=False)
+        a_min = array.min() if a_min is None else min(a_min, array.min())
+        a_max = array.max() if a_max is None else max(a_max, array.max())
+    for i, arg in enumerate(args):
+        try:
+            r = RasterReader(arg)
+        except AttributeError:
+            r = arg
+        array = r.get_array(mask=True, scale=False)
+        array = (array - a_min) / (a_max - a_min)
+        array = cm(array)
+        img = Image.fromarray((array * 255).astype('uint8'))
+        img = img.resize((img.size[0] * resize, img.size[1] * resize))
+        images.append(img)
+    images[0].save(output_filename, 'GIF', duration=1000, save_all=True, optimize=False, append_images=images[1:])
+
+
+# def create_gifs(output_filename, *args, **kwargs):
+#     """
+#
+#     :param self:
+#     :param output_filename:
+#     :param args:
+#     :param kwargs:
+#         :key mask: default True
+#         :key scale: default False
+#         :key band_number:
+#     :return:
+#     """
+#     from PIL import Image
+#     import matplotlib as mpl
+#     cm_hot = mpl.cm.get_cmap('hot')
+#     images = list()
+#     for i, arg in enumerate(args):
+#         try:
+#             r = RasterReader(arg)
+#         except AttributeError:
+#             r = arg
+#
+#         p = r.get_parameters()
+#         nodata = p.nodata
+#         array = r.get_array(mask=False, scale=False)
+#         array[array == nodata] = 0
+#         array *= 255.0 / array.max()
+#         array = array.astype(np.uint8)
+#         array = cm_hot(array)
+#         array *= 255
+#         array = array.astype('uint8')
+#         print array
+#         # data = img.getdata()
+#         # max_d = max(data) * 1.2
+#         # img.putdata([item if item != nodata else 0 for item in data])
+#         img = Image.fromarray(array)
+#         img = img.resize((img.size[0] * 50, img.size[1] * 50))
+#         images.append(img)
+#     images[0].save(output_filename, 'GIF', duration=2000, save_all=True, optimize=False, append_images=images[1:])
+
+
+# def create_gifs(output_filename, *args, **kwargs):
+#     """
+#
+#     :param self:
+#     :param output_filename:
+#     :param args:
+#     :param kwargs:
+#         :key mask: default True
+#         :key scale: default False
+#         :key band_number:
+#     :return:
+#     """
+#     from PIL import Image
+#     import imageio as io
+#     images = list()
+#
+#     for i, arg in enumerate(args):
+#         try:
+#             r = RasterReader(arg)
+#         except AttributeError:
+#             r = arg
+#         array = r.get_array(mask=False, scale=False)
+#         images = [io.imread(os.path.join(input_dir, f1)) for f1 in filenames]
+#     io.mimsave(output_gif, jpeg_images, duration=0.5)
+
+
 def get_parameters(raster):
+    """Return the raster parameters defined in this raster
+
+    :param raster: dataset or filename
+    :type raster: gdal.Dataset
+    :return: raster parameters
+    :rtype: RasterParameters
+    """
+
     return parameter.get_parameters(raster)
 
 
-def copy(raster, dst_filename, driver_short_name=None):
+def copy(raster, dst_filename='', driver_short_name=None):
+    """Return a copy of given raster
+
+    Creates a new RasterUpdate instance using the parameters of this raster
+
+    :param raster:
+    :param dst_filename:
+    :param driver_short_name:
+    :return: copy of this raster
+    :rtype: RasterUpdate
+    """
     try:
         raster = RasterReader(raster)
     except AttributeError:
         raster = raster
-    dst_driver = get_driver(dst_filename, driver_short_name)
-    return RasterModifier(dst_filename, dst_driver.CreateCopy(dst_filename, raster.dataset))
+    drv = get_driver(dst_filename, driver_short_name)
+    dataset = drv.CreateCopy(dst_filename, raster.dataset)
+    return RasterUpdate(dataset)
+
+
+def scale_array(array):
+
+    def scale(a):
+        array_min = np.amin(a)
+        array_max = np.amax(a)
+        return (a - array_min) / (array_max - array_min)
+
+    if len(array.shape) > 2:  # ndim does not work for masked arrays
+        for i in range(len(array)):
+            array[i, :, :] = scale(array[i, :, :])
+    else:
+        array = scale(array)
+    return array
 
 
 def pixel_size(geo_trans):
+    """Return pixel sizes
+
+    :param geo_trans: geo transformation
+    :type geo_trans: tuple with six values
+    :return: pixel sizes (x, y): (column width, row height)
+    :rtype: tuple
+    """
     return geo_trans[1], -geo_trans[5]
 
 
 def world_to_pixel(geo_trans, x, y, np_func=np.trunc):
+    """Transform world into pixel coordinates
+
+    :param geo_trans: geo transformation
+    :type geo_trans: tuple with six values
+    :param x:
+    :param y:
+    :param np_func:
+    :return: pixel coordinates of (x, y)
+    :rtype: list of int
+    """
     # print geo_trans, x, y
     # xOffset = int((x - geo_trans[0]) / geo_trans[1])
     # yOffset = int((y - geo_trans[3]) / geo_trans[5])
@@ -403,9 +922,10 @@ def world_to_pixel(geo_trans, x, y, np_func=np.trunc):
 
 
 def pixel_to_world(geo_trans, x, y):
-    """
-    Return the top-left world coordinate of the pixel
-    :param geo_trans:
+    """Return the top-left world coordinate of the pixel
+
+    :param geo_trans: geo transformation
+    :type geo_trans: tuple with six values
     :param x:
     :param y:
     :return:
@@ -414,21 +934,61 @@ def pixel_to_world(geo_trans, x, y):
 
 
 def extent_pixel_to_world(geo_trans, raster_x_size, raster_y_size):
+    """Return extent in world coordinates.
+
+    Transform the given pixel coordinates `raster_x_size` (number of columns) and `raster_y_size` (number of rows) into
+    world coordinates.
+
+    :param geo_trans: geo transformation
+    :type geo_trans: tuple with six values
+    :param raster_x_size: number of columns
+    :type raster_x_size: int
+    :param raster_y_size: number of rows
+    :return: (x_min, x_max, y_min, y_max)
+    :rtype: tuple
+    """
     x_min0, y_max0 = pixel_to_world(geo_trans, 0, 0)
     x_max0, y_min0 = pixel_to_world(geo_trans, raster_x_size, raster_y_size)
     return x_min0, x_max0, y_min0, y_max0
 
 
 def extent_world_to_pixel(geo_trans, min_x, max_x, min_y, max_y):
+    """Return extent in pixel coordinates
+
+    :param geo_trans: geo transformation
+    :type geo_trans: tuple with six values
+    :param min_x: minimum x (minimum longitude)
+    :type min_x: float
+    :param max_x: maximum x (maximum longitude)
+    :type max_x: float
+    :param min_y: minimum x (minimum latitude)
+    :type min_y: float
+    :param max_y: maximum x (maximum latitude)
+    :type max_y: float
+    :return: (u_min, u_max, v_min, v_max)
+    :rtype: tuple
+    """
+    geo_trans = list(geo_trans)
     u_min, v_min = world_to_pixel(geo_trans, min_x, max_y)
     u_max, v_max = world_to_pixel(geo_trans, max_x, min_y)
-    # u_min, v_min = world_to_pixel(geo_trans, min_x, max_y, np.floor)
-    # u_max, v_max = world_to_pixel(geo_trans, max_x, min_y, np.ceil)
     geo_trans[0], geo_trans[3] = pixel_to_world(geo_trans, u_min, v_min)
     return (u_min, u_max, v_min, v_max),  geo_trans
 
 
 def get_centroid_world_coordinates(geo_trans, raster_x_size, raster_y_size, x_pixel_size, y_pixel_size):
+    """Return the raster centroid in world coordinates
+
+    :param geo_trans: geo transformation
+    :type geo_trans: tuple with six values
+    :param raster_x_size: number of columns
+    :type raster_x_size: int
+    :param raster_y_size: number of rows
+    :param x_pixel_size: pixel size in x direction
+    :type: x_pixel_size: float
+    :param y_pixel_size: pixel size in y direction
+    :type y_pixel_size: float
+    :return:
+    """
     x0, y0 = pixel_to_world(geo_trans, 0, 0)
     x1, y1 = pixel_to_world(geo_trans, raster_x_size-1, raster_y_size-1)
     x1 += x_pixel_size
@@ -437,51 +997,61 @@ def get_centroid_world_coordinates(geo_trans, raster_x_size, raster_y_size, x_pi
 
 
 def get_default_values(number_of_bands, values):
+    """Return values for bands
+
+    Utility function to get values (e.g., nodata) for bands.
+
+    For n = number_of_bands:
+    - If values is a single value, transform it into a list with n elements
+    - If values is a list with size lower than n, extend the list to size n by repeating the last value (n=4, values=[1, 2], result=[1, 2, 2, 2]
+    - If values is a list with size greater than n, slice values to values[:n]
+
+    :param number_of_bands: number of bands
+    :type number_of_bands: int
+    :param values: value or list of values
+    :type values: same as raster type
+    :return: values
+    :rtype: same as input values
+    """
     try:
         if number_of_bands < len(values):
             values = values[:number_of_bands]
         elif number_of_bands > len(values):
             values = values[-1] * (number_of_bands - len(values))
-    except TypeError, te:
+    except TypeError:
         values = [values] * number_of_bands
     except:
         raise
     return values
 
 
-    return result
+def rasters_get_extent(rasters, extent_type='intersection'):
+    """Return the extent of a list of rasters.
 
+    Return the extent of the union or intersection of a list of rasters
 
-def get_extent(rasters, extent_type='intersection'):
-    """
-    Args:
-        rasters:
-        extent_type (str): intersection or union
+    :param rasters: list of rasters or raster filenames (also mixed)
+    :param extent_type: intersection or union
+    :return: (xmin, xmax, ymin, ymax) in world coordinates
     """
     # Get get common extent
     # Get the rasters
     rasters = [RasterReader(ir) if isinstance(ir, basestring) else ir for ir in rasters]
-    # Get the extent
-    xmin, xmax, ymin, ymax = rasters[0].get_extent()
-    et = extent_type.lower()
-    if et == 'intersection':
-        for r in rasters:
-            xmin0, xmax0, ymin0, ymax0 = r.get_extent()
-            xmin = max(xmin, xmin0)
-            xmax = min(xmax, xmax0)
-            ymin = max(ymin, ymin0)
-            ymax = min(ymax, ymax0)
-    elif et == 'union':
-        for r in rasters:
-            xmin0, xmax0, ymin0, ymax0 = r.get_extent()
-            xmin = min(xmin, xmin0)
-            xmax = max(xmax, xmax0)
-            ymin = min(ymin, ymin0)
-            ymax = max(ymax, ymax0)
-    return xmin, xmax, ymin, ymax
+    return merge_envelopes([r.get_extent() for r in rasters])
 
 
-def get_pixel_sizes(rasters, minmax='max'):
+def rasters_get_pixel_size(rasters, minmax='max'):
+    """Return union or intersection of pixel sizes
+        - If minmax='min', return the intersection of the pixel sizes defined in the list of rasters. This corresponds to the smallest pixel size among all rasters.
+        - If minmax='max', return the union of the pixel sizes defined in the list of rasters. This corresponds to the largest pixel size among all rasters.
+
+    :param rasters: list of rasters
+    :type rasters: list of raster file names or list of Raster instances, also both types in the same list
+    :param minmax: 'min' for intersection and 'max' for union
+    :type minmax: str
+    :return: pixel sizes (x, y): (number of columns, number of rows)
+    :rtype: tuple
+    """
     rasters = [RasterReader(ir) if isinstance(ir, basestring) else ir for ir in rasters]
     xs, ys = rasters[0].get_pixel_size()
     if minmax == 'max':
@@ -495,175 +1065,4 @@ def get_pixel_sizes(rasters, minmax='max'):
             xs = min(xs, xs0)
             ys = min(ys, ys0)
     return xs, ys
-
-
-def pim2gim(pim):
-    """Converts a Python Imaging Library array to a gdalnumeric image.
-    """
-    gim = gdalnumeric.fromstring(pim.tostring(), 'b')
-    gim.shape = pim.im.size[1], pim.im.size[0]
-    return gim
-
-
-def gim2pim(gim):
-    """Converts a gdalnumeric image array to a Python Imaging Library.
-    """
-    return Image.fromstring('L', (gim.shape[1], gim.shape[0]), (gim.astype('b')).tostring())
-
-
-def histogram(a, bins=range(0, 256)):
-    """Histogram function for multi-dimensional array.
-    a = array
-    bins = range of numbers to match
-
-    See:
-        http://geospatialpython.com/2011/02/clip-rasters-using-shapefile.html
-    """
-    fa = a.flat
-    n = gdalnumeric.searchsorted(gdalnumeric.sort(fa), bins)
-    n = gdalnumeric.concatenate([n, [len(fa)]])
-    hist = n[1:]-n[:-1]
-    return hist
-
-
-def stretch(gim):
-    """Performs a histogram stretch on a gdalnumeric array image.
-
-    See:
-        http://geospatialpython.com/2011/02/clip-rasters-using-shapefile.html
-    """
-    hist = histogram(gim)
-    im = gim2pim(gim)
-    lut = []
-    for b in range(0, len(hist), 256):
-        # step size
-        step = reduce(operator.add, hist[b:b+256]) / 255
-        # create equalization lookup table
-        n = 0
-        for i in range(256):
-            lut.append(n / step)
-            n += hist[i+b]
-    return pim2gim(im.point(lut))
-
-
-def merge(rasters,  target_filename, no_data=None):
-    merge_par = ['', '-o', target_filename]
-    if no_data:
-        merge_par += ['-a_nodata', str(no_data)]
-
-    for raster in rasters:
-        merge_par.append(raster)
-    gdal_merge.main(merge_par)
-
-
-def geometry_to_gdal_image(geom, geo_trans, u_width, v_height):
-    geometry_type = geom.GetGeometryType()
-    # Transform features points coordinates into pixels coordinates
-    geom2 = geom.GetGeometryRef(0) if geometry_type == ogr.wkbPolygon else geom
-    points = [(geom2.GetX(p), geom2.GetY(p)) for p in range(geom2.GetPointCount())]
-    pixels = [world_to_pixel(geo_trans, p[0], p[1]) for p in points]
-
-    r_pol = Image.new("L", (u_width, v_height), 1)  # L: 8-bit pixels, black and white,
-    i_pol = ImageDraw.Draw(r_pol)
-    if geometry_type == ogr.wkbPolygon:
-        i_pol.polygon(pixels, 0)
-    else:
-        i_pol.line(pixels, 0)
-    return pim2gim(r_pol)
-
-
-def no_verbose(_):
-    pass
-
-
-def default_verbose(text, same_line=False):
-    if same_line:
-        print text,
-    else:
-        print text
-
-
-# =============================================================================
-# Members and names
-# =============================================================================
-def get_image_members(filename, substrings=None, sorted_by_name=True):
-    """
-    :param filename: full path or tar object
-    :param substrings:
-    :param sorted_by_name:
-    :return:
-    """
-    is_filename = True
-    try:
-        mode = 'r:gz{' if filename.endswith('.gz') else 'r'
-        tar = tarfile.open(filename, mode=mode)
-    except AttributeError, e:
-        tar = filename
-        is_filename = False
-    members = [m for m in tar.getmembers()]
-    if substrings:
-        members = [[m for m in members if s in m.name] for s in substrings]
-        members = [m for m0 in members for m in m0]
-    if is_filename:
-        tar.close()
-    return members if not sorted_by_name else sorted(members, key=lambda member: member.name)
-
-
-def get_image_names(filename, substrings=None, sorted_by_name=True):
-    """
-    :param filename:
-    :param substrings:
-    :param sorted_by_name:
-    :return:
-    """
-    return [m.name for m in get_image_members(filename, substrings, sorted_by_name)]
-
-
-# =============================================================================
-# Reading
-# =============================================================================
-def read_image(filename, band_number=1):
-    r = RasterReader(filename)
-    array = r.get_array(band_number=band_number)
-    nodata = r.get_nodata(band_number)
-    array[array == nodata] = np.nan
-    return array
-
-
-def read_images_from_directory(input_dir, substrings=('.tif',), x_off=0, y_off=0, x_size=None, y_size=None):
-    filenames = [[f for f in os.listdir(input_dir) if s in f] for s in substrings]
-    filenames = [os.path.join(input_dir, f) for f0 in filenames for f in f0]
-    return {os.path.basename(filename): read_image(filename, x_off, y_off, x_size, y_size) for filename in filenames}
-
-
-def check_and_extract_images(f_in, product_dir, verbose=default_verbose):
-    f_base = os.path.basename(f_in)
-    print f_in, product_dir, f_base
-
-    download_dict = {}
-    for f in os.listdir(product_dir):
-        download_dict[f] = os.path.getsize(os.path.join(product_dir, f))
-
-    mode = 'r:gz' if f_in.endswith('.gz') else 'r'
-    verbose('\tExtracting ' + f_in)
-    with tarfile.open(f_in, mode=mode) as tar:
-        for member in get_image_members(tar):
-            if member.name not in download_dict:
-                verbose('\tExtracting ' + member.name)
-                tar.extract(member, path=product_dir)
-            elif member.size != download_dict[member.name]:
-                verbose('\tRe-extracting ' + member.name)
-                tar.extract(member, path=product_dir)
-
-
-# =============================================================================
-# Statistics
-# =============================================================================
-def variance(filenames, filename_out):
-    arrays = [read_image(f).astype(float) for f in filenames]
-    parameters = RasterReader(filenames[0]).get_parameters()
-    parameters.data_types = [gdal.GDT_Float32]
-    r_out = RasterWriter(filename_out, parameters)
-    r_out.set_array(np.var(np.dstack(arrays), axis=2))
-
 

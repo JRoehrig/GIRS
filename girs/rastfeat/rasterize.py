@@ -1,169 +1,283 @@
+import numbers
 import numpy as np
-from osgeo import gdal, ogr
-
+from osgeo import gdal, ogr, gdal_array
+from girs import srs
+from girs.geom.envelope import is_intersect_envelope
 from girs.rast.parameter import RasterParameters
 from girs.rast.raster import RasterWriter, get_default_values
 from girs.feat.layers import LayersReader
 
 
-def rasterize_layer(input_layer, output_raster, values, raster_parameters=None, layer_number=0,
-                    pixel_size=None, all_touched=False):
-    if isinstance(values, basestring):
-        return _layer_to_raster_by_field(input_layer, output_raster, values, raster_parameters, layer_number, pixel_size)
-    else:
-        return _layer_to_raster_by_value(input_layer, output_raster, values, raster_parameters, layer_number,
-                                         pixel_size, all_touched)
-
-
-def _layer_to_raster_by_value(lrs, output_raster, values, raster_parameters, layer_number=0, pixel_size=None,
-                              all_touched=False):
+def rasterize_layers(layers, **kwargs):
     """Rasterize the input layer.
+
         - If input_layer is a file name or Layers object, layer_number will be used.
         - If not None, raster_parameters will be used to create the resulting rasters
 
-    Args:
-        input_layer (str or Layers or Layer): layers file name or Layers object or Layer object.
+    :param layers: layers file name or Layers object or ogr Layer object
+    :type layers: str, girs.feat.layers.LayersSet, ogr.Layer
+    :param kwargs:
+        :key layer_number: (int, [int]): layer number or list of layer numbers
+        :key burn_values: (int, [int]): unique burn value or list of burn values, one for each layer number
+        :key raster_parameters: raster or raster parameter. If given, nodata and pixel size are not used
+        :key nodata: (raster type, [raster type]): nodata or list of nodata, one for each layer number
+        :key pixel_size: (float): pixel size if output_raster is a file name. If not given, the pixel size will be 1/100 of the narrowest layer extent (width or height)
+        :key all_touched: True/False, default all_touched=False
+        :key output_raster: girs.rast.raster.RasterWriter, girs.rast.raster.RasterUpdate, or filename of the output raster
 
-        output_raster (str): an existing rasters or filename of the new rasters
-
-        values (number or list): unique burn value or list with one burn value for each rasters band
-
-        layer_number
-
-        nodata: unique nodata value for all bands or list of nodata values with end equal number of bands
-
-        pixel_size (float): pixel size if output_raster is a file name. If not given, the pixel size will be 1/100
-            of the narrowest layer extent (width or height)
-
-    return:
-        rasters (Raster): a Raster object if raster_out is a file name, otherwise the same object as in raster_out but
-            with the burned layer
+    :return: girs.rast.raster.RasterWriter
     """
-    # Check combination of parameters
+    # :key clip: (bool) clip to layers if True
+
+    layer_number = kwargs.pop('layer_number', None)
+    burn_values = kwargs.pop('burn_values', 1)
+    nodata = kwargs.pop('nodata', 0)
+    pixel_size = kwargs.pop('pixel_size', None)
+    all_touched = kwargs.pop('all_touched', False)
+    # clip = kwargs.pop('clip', False)
+    output_raster = kwargs.pop('output_raster', None)
+    raster_parameters = kwargs.pop('raster_parameters', None)
 
     try:
-        lrs = LayersReader(lrs)
-        lyr = lrs.get_layer(layer_number)
-    except (TypeError, RuntimeError):
-        try:
-            lyr = lrs.get_layer(layer_number)
-        except AttributeError:
-            lyr = lrs
+        lrs = LayersReader(layers)  # keep lrs alive
+        layers = lrs
+    except RuntimeError:
+        pass
 
     if raster_parameters:
-        values = get_default_values(raster_parameters.number_of_bands, values)
-    else:
-        rs = lyr.GetSpatialRef().ExportToWkt()
-        # Create the rasters
-        xmin, xmax, ymin, ymax = lyr.GetExtent()
-        dx, dy = xmax - xmin, ymax - ymin
-        if not pixel_size:
-            pixel_size = max(dx, dy) / 100.0
-        nx, ny = int(dx / pixel_size), int(dy / pixel_size)
-        gt = [xmin, pixel_size, 0, ymax, 0, -pixel_size]
         try:
-            nb = len(values)
-        except TypeError, te:
-            nb = 1
-            values = [values]
-        except:
-            raise
-        nodata = 0
-        for i in range(256):
-            if i not in values:
-                nodata = i
-                break
-        raster_parameters = RasterParameters(nx, ny, gt, rs, nb, nodata, gdal.GDT_Byte, driver_short_name=None)
+            rst_srs = raster_parameters.get_coordinate_system()
+            lrs_srs = layers.get_coordinate_system()
+            if not srs.is_same_srs(rst_srs, lrs_srs):
+                lrs = layers.transform(wkt=rst_srs)
+                layers = lrs
+        except AttributeError:
+            pass
 
-    output_raster = RasterWriter(output_raster, raster_parameters)
-    options = []
-    if all_touched:
-        options.append("ALL_TOUCHED=TRUE")
-    gdal.RasterizeLayer(output_raster.dataset, range(1, raster_parameters.number_of_bands+1), lyr, None, None,
-                        burn_values=values, options=options)
+    if layer_number:
+        try:
+            layers = [layers.get_layer(i) for i in layer_number]
+        except TypeError:
+            layers = [layers.get_layer(i) for i in [layer_number]]
+    else:
+        try:
+            layers = [layers.get_layer(i) for i in range(layers.get_layer_count())]
+        except AttributeError:  # lrs is an org-layer
+            layers = [layers]
+
+    if all(v is None for v in layers):
+        msg = 'Layers not found. Layer numbers: {}'.format(layer_number)
+        raise TypeError(msg)
+    try:
+        burn_values = list(burn_values)
+    except TypeError:
+        burn_values = [burn_values]
+
+    options = ["ALL_TOUCHED=TRUE"] if all_touched else ["ALL_TOUCHED=FALSE"]
+
+    raster_parameters = get_raster_parameters(raster_parameters, layers, pixel_size, nodata, burn_values)
+
+    output_raster = RasterWriter(raster_parameters, output_raster)
+    for bn in range(1, output_raster.get_band_count()+1):
+        arr = output_raster.get_array(band_number=bn)
+        arr[:, :] = raster_parameters.nodata[bn-1]
+        output_raster.set_array(array=arr, band_number=bn)
+
+    for ilyr, lyr in enumerate(layers):
+        gdal.RasterizeLayer(output_raster.dataset, range(ilyr+1, ilyr+2), lyr, None, None, burn_values=burn_values,
+                            options=options)
+
+    output_raster.dataset.FlushCache()
+
     return output_raster
 
 
-def _layer_to_raster_by_field(layer_in, raster_out, field_name, raster_parameters, layer_number=0, pixel_size=None,
-                              driver=None):
-    """Rasterize a Layer object containing lines or polygons.
+def rasterize_layers_by_field(layers, field_names, **kwargs):
+    """Rasterize a layer containing lines or polygons.
 
-    Args:
-        layer_in (str or Layers or Layer): Layer object, Layers object or layers file name. If a Layers object was
-            given, use the layer specified in layer_number
+    Raster values are set according to field values found in field_name. If field_name is a list of field names, its
+    length must coincide with the number of layers given in layer_in.
 
-        field_name: the field name of the layer used to rasterize. The burn value will be different for each field value.
+    The spatial reference system will be the same as from layer_in.
 
-        output_raster (str): an existing rasters or filename of the new rasters
+    If layer_in contains more than one layer and layer_number is not given, generate a raster with as many bands as
+    layers.
 
-        kwargs:
-            'layer_number' (int): layer number in case layer_in is a Layers object or layers file name. Default is
-                layer number = 0
-            'pixel_size' (float): pixel size if output_raster is a file name. If not given, the pixel size will be 1/100
-                of the narrowest layer extent (width or height)
-            'scale' (float): to scale the bounding box of the layers_in
-            'driver' (str): driver name for raster_out. if raster_out is a gdal dataset or Raster object, the driver
-                will be negletet
-    return:
-        rasters (Raster): a Raster object if raster_out is a file name, otherwise the same object as in raster_out but
-            with the burned layer
+    if no raster_out was defined, the raster will be created in the memory.It is possible to define a label for
+    raster_out in the memory by explicitly setting the driver to 'MEM', e.g., raster_out='mylabel', driver='MEM'
+
+    The parameters defining the raster properties are (in priority order):
+        - raster_parameters: a raster will be created, transformed to the the coordinate system of layer_in and clipped
+          according to layer_in. The raster parameters are retrieved from the new raster. Driver from raster parameters
+          is not used
+        - layer_in: raster parameters are obtained from envelope of layer_in; pixel_size = 1/100 of the narrowest layer extent (width or height) if pixel_size: (nx, ny) or n is not given
+
+    :param layers: Layers filename, Layers object or a layer, If a Layers object was given, use the layer specified in layer_number
+    :param field_names: the field name of the layer used to rasterize. The burn value will be unique for each unique value found in the field name
+    :type field_names: str
+    :param kwargs:
+        :key layer_number: only used if layer_in is a Layers object. If layer_in is a Layers object and layer_number is unset, use all layers and create the corresponding number of bands
+        :key raster_out: an existing rasters or filename of the new rasters
+        :key driver: None
+        :key raster_parameters:
+        :key clip:
+        :key pixel_size: None
+    :return: a Raster object if raster_out is a file name, otherwise the same object as in raster_out but with the burned layer
+    :rtype: RasterWriter
     """
-
-    if not driver:
-        driver = get_driver_name_from_file_name(raster_out)
+    layer_number = kwargs.pop('layer_number', None)
+    # field_names = kwargs.pop('field_names', 1)
+    nodata = kwargs.pop('nodata', 0)
+    pixel_size = kwargs.pop('pixel_size', None)
+    all_touched = kwargs.pop('all_touched', False)
+    output_raster = kwargs.pop('output_raster', None)
+    raster_parameters = kwargs.pop('raster_parameters', None)
+    driver = kwargs.pop('driver', None)
 
     try:
-        input_layer = LayersReader(layer_in)
-        lyr = input_layer.get_layer(layer_number)
-    except TypeError:
+        layers = LayersReader(layers)
+    except RuntimeError:
+        pass
+
+    if layer_number:
+        layers = [layers.get_layer(i) for i in list(layer_number)]
+    else:
         try:
-            lyr = input_layer.get_layer(layer_number)
-        except AttributeError:
-            lyr = input_layer
+            layers = [layers.get_layer(i) for i in range(layers.get_layer_count())]
+        except AttributeError:  # lrs is an org-layer
+            layers = [layers]
 
-    srs = lyr.GetSpatialRef()
+    # One field name for each layer
+    if isinstance(field_names, basestring):
+        field_names = [field_names] * len(layers)
 
-    field_values = {}
-    ldf = lyr.GetLayerDefn()
-    for i in range(ldf.GetFieldCount()):
-        fd = ldf.GetFieldDefn(i)
-        if field_name == fd.GetName():
-            for feat in lyr:
-                value = feat.GetField(i)
-                if value not in field_values:
-                    field_values[value] = [feat]
-                else:
-                    field_values[value].append(feat)
-            break
+    # Get field values list: a list of dictionaries, where each dictionary has field value as key and list of
+    # corresponding features as value.
+    field_values_list = list()
+    for ilyr, lyr0 in enumerate(layers):
+        ldf = lyr0.GetLayerDefn()
+        field_values = dict()
+        for ild in range(ldf.GetFieldCount()):
+            fd = ldf.GetFieldDefn(ild)
+            if field_names[ilyr] == fd.GetName():
+                lyr0.ResetReading()
+                for feat in lyr0:
+                    value = feat.GetField(ild)
+                    if value not in field_values:
+                        field_values[value] = [feat]
+                    else:
+                        field_values[value].append(feat)
+                lyr0.ResetReading()
+                break
+        if not field_values:
+            raise Exception('rasterize_layer: no value found for field "{}"'.format(str(field_names[ilyr])))
+        field_values_list.append(field_values)
 
-    if not field_values:
-        raise Exception('rasterize_layer: no value found for field "' + field_name + '"')
+    burn_values = np.array([fv for field_values in field_values_list for fv in field_values.keys()])
+    sequential = not np.issubdtype(burn_values.dtype, np.number)
+    if sequential:
+        burn_values_map = {k+1: v for k, v in enumerate(set(burn_values.tolist()))}
+    else:
+        burn_values_map = {v: v for v in set(burn_values)}
 
-    array_out = None
-    nb = None
-    nu, nv = None, None
-    geo_trans = None
-    for field_value in field_values.keys():
-        tmp_ds = ogr.GetDriverByName('Memory').CreateDataSource('tmp')
-        tmp_lyr = tmp_ds.CreateLayer('', srs=srs)
-        for feat in field_values[field_value]:
-            tmp_lyr.CreateFeature(feat)
-        r_out = _layer_to_raster_by_value(tmp_lyr, 'mem', [field_value], raster_parameters, 0, pixel_size)
-        if array_out is None:
-            nb = r_out.get_number_of_bands()
-            nu, nv = r_out.get_raster_size()
-            geo_trans = r_out.get_geotransform()
-            array_out = np.empty((nb, nv, nu))
-            for i in range(nb):
-                array_out[i] = np.empty((nv, nu)) * np.nan
-        for i in range(0, nb):
-            array_burn = r_out.get_array(i+1)
-            array_mask = np.ma.masked_where(array_burn!=field_value, array_burn)
-            array_out[i] = np.where(array_mask.mask, array_out[i], array_burn)
+    raster_parameters = get_raster_parameters(raster_parameters=raster_parameters, layers=layers,
+                                              pixel_size=pixel_size, nodata=nodata,
+                                              burn_values=burn_values_map.values())
+    array_out = np.empty((raster_parameters.number_of_bands,
+                          raster_parameters.RasterYSize, raster_parameters.RasterXSize))
 
-    raster_out = RasterWriter(raster_out, nu, nv, nb, gdal.GDT_Byte, geo_trans, srs.ExportToWkt(), driver=driver, nodata=nodata)
-    for i in range(nb):
-        raster_out.set_array(array_out[i], i+1)
-    raster_out.dataset.FlushCache()
-    return raster_out
+    for i in range(raster_parameters.number_of_bands):
+        array_out[i] = np.empty((raster_parameters.RasterYSize, raster_parameters.RasterXSize)) * np.nan
+
+    for ilyr, lyr in enumerate(layers):
+        field_values = field_values_list[ilyr]  # dictionary with field values as key and list of features as value
+        for ifv, field_value in enumerate(field_values):  # burn with a mask for each field value
+            tmp_ds = ogr.GetDriverByName('Memory').CreateDataSource('tmp')
+            tmp_lyr = tmp_ds.CreateLayer('', srs=lyr.GetSpatialRef())
+            for feat in field_values[field_value]:  # get all features sharing this field_value
+                tmp_lyr.CreateFeature(feat)
+            burn_values = [ifv+1] if sequential else np.array([field_value])
+            r_out = rasterize_layers(layers=tmp_lyr, burn_values=burn_values, raster_parameters=raster_parameters,
+                                     all_touched=all_touched)
+            array_burn = r_out.get_array()
+            array_mask = np.ma.masked_where(array_burn != burn_values[0], array_burn)
+            array_out[ilyr] = np.where(array_mask.mask, array_out[ilyr], array_burn)
+            del tmp_ds
+    r_out = RasterWriter(raster_parameters=raster_parameters, source=output_raster, drivername=driver)
+    for i in range(raster_parameters.number_of_bands):
+        arr = array_out[i]
+        arr[np.isnan(arr)] = raster_parameters.nodata[i]
+        r_out.set_array(arr, i+1)
+        r_out.dataset.FlushCache()
+    burn_values_map['nodata'] = raster_parameters.nodata
+    return r_out, burn_values_map
+
+
+def get_raster_parameters(raster_parameters, layers, pixel_size, nodata, burn_values):
+    """Return raster parameters from layer
+
+    :param raster_parameters:
+    :param layers:
+    :param pixel_size:
+    :param nodata:
+    :param burn_values:
+    :param clip:
+    :return:
+    """
+    try:
+        if not isinstance(raster_parameters, RasterParameters):
+            rst = raster_parameters
+            raster_parameters = rst.get_parameters()
+        if not srs.is_same_srs(raster_parameters.get_coordinate_system(), layers[0].GetSpatialRef()):
+            msg = 'Raster and layer are not in the same coordinate system: \n\t{}, \n\t{}'.format(
+                raster_parameters.get_coordinate_system(), srs.export(layers[0].GetSpatialRef(), fmt='wkt'))
+            raise TypeError(msg)
+        lrs_env = list(layers[0].GetExtent())
+        rst_env = raster_parameters.get_extent_world()
+        if not is_intersect_envelope(lrs_env, rst_env):
+            msg = "Raster does not intersect the layer: no rasterization possible."
+            raise TypeError(msg)
+        return raster_parameters
+    except AttributeError:
+        pass
+
+    number_of_bands = len(layers)
+    rs = layers[0].GetSpatialRef().ExportToWkt()
+    env = layers[0].GetExtent()
+
+    xmin, xmax, ymin, ymax = env
+    dx, dy = xmax - xmin, ymax - ymin
+    if not pixel_size:
+        pixel_size = max(dx, dy) / 100.0
+        pixel_size = (pixel_size, pixel_size)
+    nx, ny = int(dx / pixel_size[0]), int(dy / pixel_size[1])
+    geo_trans = [xmin, pixel_size[0], 0, ymax, 0, -pixel_size[1]]
+
+    burn_values = np.array(burn_values)
+    if np.issubdtype(burn_values.dtype, np.integer):
+        dtype_info = np.iinfo(burn_values.dtype)
+        min_type, max_type = dtype_info.min, dtype_info.max
+        if nodata is None or nodata in burn_values:
+            if nodata == 0:
+                nodata = max_type
+                while nodata in burn_values and nodata > min_type:
+                    nodata -= 1
+            else:
+                nodata = min_type
+                while nodata in burn_values and nodata < max_type:
+                    nodata += 1
+    else:
+        dtype_info = np.finfo(burn_values.dtype)
+        min_type, max_type, resolution = dtype_info.min, dtype_info.max, dtype_info.resolution
+        if nodata is None or nodata in burn_values:
+            found = False
+            for nd in np.arange(min_type, max_type, resolution):
+                if nd not in burn_values:
+                    found = True
+                    break
+            assert found
+    assert min_type <= nodata <= max_type
+    data_types = gdal_array.NumericTypeCodeToGDALTypeCode(burn_values.dtype)
+    nodata = get_default_values(number_of_bands=number_of_bands, values=nodata)
+    return RasterParameters(nx, ny, geo_trans, rs, number_of_bands, nodata, data_types, driver_short_name=None)
 
