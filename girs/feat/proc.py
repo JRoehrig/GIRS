@@ -1,3 +1,12 @@
+from __future__ import division
+from __future__ import print_function
+from __future__ import absolute_import
+from builtins import str
+from builtins import zip
+from builtins import range
+from past.builtins import basestring
+from past.utils import old_div
+from builtins import object
 import os
 import time
 from collections import OrderedDict
@@ -33,7 +42,7 @@ def union_cascade(geometries_wkb, cpus=1):
         else:
             uq_geometries_wkb.append([geom_wkb, geom.GetEnvelope()])
 
-    available_cpu_count = mp.cpu_count() if cpus > 1 else None
+    available_cpu_count = mp.cpu_count() if cpus > 1 else 1
     return UnionQuadtree(uq_geometries_wkb, '', cpus, available_cpu_count).get_geometry()
 
 
@@ -105,8 +114,8 @@ class UnionQuadtree(object):
         """
         requested_cpu_count = min(requested_cpu_count, available_cpu_count)
         try:
-            env = zip(*zip(*geometries_wkb)[1])
-        except IndexError, e:
+            env = list(zip(*list(zip(*geometries_wkb))[1]))
+        except IndexError as e:
             raise e
         self.center = ((max(env[1]) + min(env[0])) * 0.5, (max(env[3]) + min(env[2])) * 0.5)
         del env
@@ -174,22 +183,52 @@ class UnionQuadtree(object):
         return geometries1, geometries2
 
 
-def idw(xy_in, z_in, xy_out, nnn=8, p=2):
-    """Return the IDW interpolation
+def idw_weights(xy_in, xy_out, nnn=None, p=2):
+    """Return the Shepard (idw) interpolation
 
     :param xy_in: list of coordinate tuples
-    :param z_in: list of: 1) values or 2) list of values => len(xy_in)==len(z_in)
     :param xy_out: list of coordinate tuples
     :param nnn: integer, number of nearest neighbors
-    :return: z value or list of z values
+    :param p:
+    :return: z-value or list of z values
     """
-    assert len(xy_in) == len(z_in)
+    n_out = len(xy_out)
+    n_in = len(xy_in)
+    w_out = np.zeros(n_in * n_out)
+    w_out = w_out.reshape((n_out, n_in))
+    nnn = min(nnn, len(xy_in)) if nnn else len(xy_in)
+    if nnn == 1:
+        w_out[:][0] = 1.0
+    else:
+        distances, indices = spatial.KDTree(xy_in).query(xy_out, k=nnn)
+        for i, (dist, idx) in enumerate(zip(distances, indices)):
+            if distances[i][0] < 1e-10:  # distances are sorted (nearest first)
+                w_out[i][0] = 1.0
+            else:
+                w = 1.0 / dist**p
+                w /= np.sum(w)
+                w_out[i] = w
+    return w_out
 
+
+def idw(xy_in, z_in, xy_out, nnn=None, p=2):
+    """Return the Shepard (idw) interpolation
+
+    :param xy_in: list of coordinate tuples
+    :param z_in: list of values
+    :param xy_out: list of coordinate tuples
+    :param nnn: integer, number of nearest neighbors
+    :param p:
+    :return: z-value or list of z values
+    """
+    nnn = min(nnn, len(xy_in)) if nnn else len(xy_in)
+    assert len(xy_in) == len(z_in)
     z_in = np.asarray(z_in)
-    nnn = min(nnn, len(xy_in))
     distances, indices = spatial.KDTree(xy_in).query(xy_out, k=nnn)
-    z_out = np.ndarray(shape=(len(indices), len(z_in[0])), dtype=float)
-    z_out.fill(0.0)
+    if z_in.ndim == 1:
+        z_out = np.zeros(len(indices))
+    else: #z_in.ndim == 2:
+        z_out = np.zeros((len(indices), z_in.shape[1]))
     for i, (dist, idx) in enumerate(zip(distances, indices)):
         if nnn == 1:
             wz = z_in[idx]
@@ -200,8 +239,43 @@ def idw(xy_in, z_in, xy_out, nnn=8, p=2):
             w /= np.sum(w)
             wz = np.dot(w, z_in[idx])
         z_out[i] = wz
+    return z_out
 
-    return z_out if len(xy_out) > 1 else z_out[0]
+# def idw(xy_in, z_in, xy_out, nnn=None, p=2):
+#     """Return the IDW interpolation
+#
+#     :param xy_in: list of coordinate tuples
+#     :param z_in: list of values
+#     :param xy_out: list of coordinate tuples
+#     :param nnn: integer, number of nearest neighbors
+#     :param p:
+#     :return: z-value or list of z values
+#     """
+#     assert len(xy_in) == len(z_in)
+#
+#     z_in = np.asarray(z_in)
+#     nnn = min(nnn, len(xy_in))
+#     distances, indices = spatial.KDTree(xy_in).query(xy_out, k=nnn)
+#     try:
+#         n_in = len(z_in[0])
+#     except TypeError:
+#         z_in = [z_in]
+#         n_in = 1
+#     z_out = np.ndarray(shape=(len(indices), n_in), dtype=float)
+#
+#     z_out.fill(0.0)
+#     for i, (dist, idx) in enumerate(zip(distances, indices)):
+#         if nnn == 1:
+#             wz = z_in[idx]
+#         elif dist[0] < 1e-10:  # distances are sorted (nearest first)
+#             wz = z_in[idx[0]]
+#         else:
+#             w = 1.0 / dist**p
+#             w /= np.sum(w)
+#             wz = np.dot(w, z_in[idx])
+#         z_out[i] = wz
+#
+#     return z_out if len(xy_out) > 1 else z_out[0]
 
 
 def dissolve(source, **kwargs):
@@ -260,7 +334,7 @@ def dissolve(source, **kwargs):
 
     layer_diss_dict = kwargs.pop('fields', {})
     try:
-        layer_diss_dict.items()
+        list(layer_diss_dict.items())
     except AttributeError:
         if isinstance(layer_diss_dict, basestring):
             layer_diss_dict = {0: [layer_diss_dict]}
@@ -269,7 +343,7 @@ def dissolve(source, **kwargs):
 
     layer_stats_dict = kwargs.pop('stats', {})
     try:
-        layer_stats_dict.keys()
+        list(layer_stats_dict.keys())
     except AttributeError:
         layer_stats_dict = {0: layer_stats_dict}
 
@@ -323,7 +397,7 @@ def dissolve(source, **kwargs):
         stats_keys_dict = dict()
         stats_methods = list()
         fd_stats = list()
-        if ilyr in layer_stats_dict.keys():
+        if ilyr in list(layer_stats_dict.keys()):
             stats_keys_out = list()
             stats_keys_dict = dict()
             for stats_parameter in layer_stats_dict[ilyr]:
@@ -381,7 +455,7 @@ def dissolve(source, **kwargs):
         lyr_in.ResetReading()
 
         ldf_out = lyr_out.GetLayerDefn()
-        fds = geometry_dict.keys()
+        fds = list(geometry_dict.keys())
         if as_collection:
             ldf_out.SetGeomType(geometry_to_geometry_collection_type(ldf_out.GetGeomType()))
             for fd in fds:
@@ -398,7 +472,7 @@ def dissolve(source, **kwargs):
                     idx += 1
                 if stats_methods:
                     stats_values = list()
-                    fd_att = zip(*attributes_dict[fd])
+                    fd_att = list(zip(*attributes_dict[fd]))
                     for i, v in enumerate(fd_att):
                         value = stats_methods[i](v)
                         stats_values.append(value)
@@ -466,7 +540,7 @@ def thiessen(points, thiessen, points_layer_number=0, point_id_field_names=None,
     # Get the clip polygon, The clip object can be 1) the given polygon, 2) the give bounding box (envelope) or
     # 3) an envelope expanding 10% of the points envelope
     if clip_region:
-        import proc as gp
+        from . import proc as gp
         try:
             clip_region = LayersReader(clip_region)
         except RuntimeError:
@@ -514,7 +588,7 @@ def thiessen(points, thiessen, points_layer_number=0, point_id_field_names=None,
     # Check if the four point regions have a negative vertex index
     for region_id in vor_point_region:
         if not any(n < 0 for n in vor_regions[region_id]):
-            print 'ERROR Thiessen'
+            print('ERROR Thiessen')
     vor_point_region = vor.point_region # .tolist()[:-4]
     vor_polygons = []
     for region_id in vor_point_region:
@@ -728,10 +802,10 @@ def get_thiessen_weights(point_shp, point_shp_id, polygon_shp, polygon_shp_id,
     def point_filter(value, values):
         return value in values
 
-    keys = sorted(valid_points.keys(), key=operator.itemgetter(0))
+    keys = sorted(list(valid_points.keys()), key=operator.itemgetter(0))
     for k in keys:
         date_key = k[0], k[1]
-        print 'calculating', date_key
+        print('calculating', date_key)
 
         # copy point_shp if valid points was defined
         if valid_points[k]:
@@ -761,7 +835,7 @@ def get_thiessen_weights(point_shp, point_shp_id, polygon_shp, polygon_shp_id,
                 t_area = feat.GetField(t_area_field)  # intersection area
                 a_code = feat.GetField(polygon_shp_id)  # polygon id
                 t_code = feat.GetField(point_shp_id)  # point id
-                weight = t_area / a_area
+                weight = old_div(t_area, a_area)
 
                 if a_code not in polygon_weights:
                     polygon_weights[a_code] = {}
@@ -832,7 +906,7 @@ def merge(layers, target=None, layers_numbers=None, field_names=None):
             srs = srs_from_wkt(lrs.get_coordinate_system(layer_number=layers_numbers[i]))
             geo_type = lrs.get_geometry_type(layer_number=layers_numbers[i])
 
-    lrs_out = LayersWriter(['', geo_type, srs, field_definitions.values()], source=target)
+    lrs_out = LayersWriter(['', geo_type, srs, list(field_definitions.values())], source=target)
 
     for lrs in layers:
         field_names = list(set(lrs.get_field_names()).intersection(set(field_definitions.keys())))

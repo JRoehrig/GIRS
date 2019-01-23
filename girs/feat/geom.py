@@ -1,6 +1,8 @@
 """
 the module ``girs.feat.geom`` creates geometries from strings and return them as an OGRGeometry object
 """
+from __future__ import print_function
+from builtins import range
 from osgeo import ogr
 from collections import OrderedDict
 
@@ -611,7 +613,7 @@ def snap_to_grid(geom, ndigits=8):
             geom2 = snap_to_grid(geom.GetGeometryRef(i), ndigits)
             result.AddGeometry(geom2)
     else:
-        r = range(geom.GetCoordinateDimension())
+        r = list(range(geom.GetCoordinateDimension()))
         for i in range(0, geom.GetPointCount()):
             pt = geom.GetPoint(i)
             result.AddPoint_2D(*[round(pt[j], ndigits) for j in r])
@@ -653,7 +655,7 @@ def join_linestrings0(linestrings_wkb):
         else:
             points_dict[p1].append((i, -1))
     result = list()
-    for p, ls_list in points_dict.items():
+    for p, ls_list in list(points_dict.items()):
         if len(ls_list) == 2:
             linestring0 = linestrings[ls_list[0][0]]
             linestring1 = linestrings[ls_list[1][0]]
@@ -669,8 +671,8 @@ def join_linestrings0(linestrings_wkb):
             else:
                 points0 = points1 + points0
 
-            print p, pos0, pos1, points0, points1
-            print p, points0[pos0], points1[pos1]
+            print(p, pos0, pos1, points0, points1)
+            print(p, points0[pos0], points1[pos1])
             return
         else:
             for ls in ls_list:
@@ -687,7 +689,7 @@ def join_linestrings2(linestrings_wkb):
     linestrings = [(g, g.GetPointCount()) for g in linestrings]
     en_dict = {g: (g.GetPoint(0), g.GetPoint(n - 1)) for ils, (g, n) in enumerate(linestrings)}
     ne_dict = {}
-    for g, (p0, p1) in en_dict.items():
+    for g, (p0, p1) in list(en_dict.items()):
         if p0 not in ne_dict:
             ne_dict[p0] = [(g, 0)]
         else:
@@ -698,7 +700,7 @@ def join_linestrings2(linestrings_wkb):
             ne_dict[p1].append((g, -1))
     found = True
     while found:
-        for p, v in ne_dict.items():
+        for p, v in list(ne_dict.items()):
             if len(v) == 2:
                 found = True
                 g0, g1 = v[0][0], v[1][0]
@@ -814,7 +816,7 @@ def join_linestrings(linestrings_wkb):
     en_ordered_dict = OrderedDict(linestrings)
     # build node-edge dictionary
     ne_dict = {}
-    for g, (p0, p1) in en_ordered_dict.items():
+    for g, (p0, p1) in list(en_ordered_dict.items()):
         if p0 not in ne_dict:
             ne_dict[p0] = [g]
         else:

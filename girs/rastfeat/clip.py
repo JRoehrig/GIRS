@@ -1,3 +1,6 @@
+from __future__ import print_function
+from builtins import str
+from builtins import range
 import os
 import sys
 import numpy as np
@@ -92,7 +95,7 @@ def clip_by_extent(raster_in, **kwargs):
     elif 'rasters' in kwargs:
         try:
             raster0 = RasterReader(kwargs['rasters'])
-        except Exception, e:
+        except Exception as e:
             raster0 = kwargs['rasters']
         x_min, x_max, y_min, y_max = raster0.get_extent()
     else:
@@ -211,13 +214,13 @@ def clip_by_vector(raster_in, layers_in, **kwargs):
     if not nodata:
         nodata = raster_parameters.nodata
 
-    burn_values = 1
+    burn_values = np.int32(1)  # TODO
     r_burn = rasterize.rasterize_layers(layers_in, burn_values=[burn_values], raster_parameters=raster_parameters,
                                         layer_number=layer_number, all_touched=all_touched)
 
     for i in range(0, raster_parameters.number_of_bands):
         array_burn = r_burn.get_array(i+1)
-        array_mask = np.ma.masked_where(array_burn!=burn_values, array_burn)
+        array_mask = np.ma.masked_where(array_burn != burn_values, array_burn)
         b_nodata = nodata[i]
         array_out[i] = np.where(array_mask.mask, b_nodata, array_out[i])
     del r_burn

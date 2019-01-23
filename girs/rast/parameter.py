@@ -1,10 +1,15 @@
+from __future__ import division
+from builtins import str
+from builtins import range
+from builtins import object
+from past.utils import old_div
 import os
 import math
 import numpy as np
 from osgeo import gdal
 
 
-class RasterParameters:
+class RasterParameters(object):
     def __init__(self, raster_x_size, raster_y_size, geo_trans, srs, number_of_bands, nodata, data_types,
                  driver_short_name=None):
         self.RasterXSize = raster_x_size
@@ -40,7 +45,7 @@ class RasterParameters:
                 v = v[:n]
             elif n > len(v):
                 v = v[:-1] + [v[-1]] * (n - len(v) + 1)
-        except TypeError, te:
+        except TypeError as te:
             v = [v] * n
         except:
             raise
@@ -52,7 +57,7 @@ class RasterParameters:
     def pixel_size(self):
         x_min, y_max = self.pixel_to_world(0, 0)
         x_max, y_min = self.pixel_to_world(self.RasterXSize, self.RasterYSize)
-        return (x_max - x_min)/self.RasterXSize , (y_max-y_min)/self.RasterYSize
+        return old_div((x_max - x_min),self.RasterXSize) , old_div((y_max-y_min),self.RasterYSize)
 
     def pixel_to_world(self, x, y):
         return self.geo_trans[0] + (x * self.geo_trans[1]), self.geo_trans[3] + (y * self.geo_trans[5])

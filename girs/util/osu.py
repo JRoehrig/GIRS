@@ -1,3 +1,5 @@
+from builtins import str
+from past.builtins import basestring
 import os
 import time
 import shutil

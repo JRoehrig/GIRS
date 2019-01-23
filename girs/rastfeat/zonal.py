@@ -1,3 +1,4 @@
+from builtins import range
 from collections import Counter
 import numpy as np
 from girs.rast.raster import RasterReader, RasterWriter
@@ -85,7 +86,7 @@ def zonal_stats(layers, input_raster, field_name, stats, **kwargs):
 
     try:
         input_raster = RasterReader(input_raster)
-    except AttributeError, e:
+    except AttributeError as e:
         pass
 
     nb = input_raster.get_band_count()
@@ -121,7 +122,7 @@ def zonal_stats(layers, input_raster, field_name, stats, **kwargs):
     raster_parameters.driverShortName = 'MEM'
     raster_parameters.number_of_bands = 1
     raster_parameters.set_nodata(0)
-    for field_value in field_values.keys():
+    for field_value in list(field_values.keys()):
         tmp_ds = ogr.GetDriverByName('Memory').CreateDataSource('tmp')
         tmp_lyr = tmp_ds.CreateLayer('', srs=srs)
         for feat in field_values[field_value]:
@@ -224,7 +225,7 @@ def zonal_stats_raster(layers, input_raster, field_name, stats, **kwargs):
 
     try:
         input_raster = RasterReader(input_raster)
-    except AttributeError, e:
+    except AttributeError as e:
         pass
 
     nb = input_raster.get_band_count()
@@ -265,7 +266,7 @@ def zonal_stats_raster(layers, input_raster, field_name, stats, **kwargs):
     rp.driverShortName = 'MEM'
     rp.number_of_bands = 1
     rp.set_nodata(0)
-    for field_value in field_values.keys():
+    for field_value in list(field_values.keys()):
         tmp_ds = ogr.GetDriverByName('Memory').CreateDataSource('tmp')
         tmp_lyr = tmp_ds.CreateLayer('', srs=srs)
         for feat in field_values[field_value]:

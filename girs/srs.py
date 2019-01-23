@@ -242,9 +242,9 @@ def get_srs(**kwargs):
     :rtype: osgeo.osr.SpatialReference
     """
     if kwargs and len(kwargs) == 1:
-        k, v = kwargs.iteritems().next()
+        k = list(kwargs.keys())[0]
         if k in _srs_from_dict:
-            return _srs_from_dict[k](v)
+            return _srs_from_dict[k](kwargs[k])
     return None
 
 
@@ -266,9 +266,16 @@ def is_same_srs(srs0, srs1):
         srs1 = srs_from_wkt(srs1)
     except TypeError:
         pass
-    assert srs0.AutoIdentifyEPSG() == 0
-    assert srs1.AutoIdentifyEPSG() == 0
-    return srs0.GetAuthorityCode(None) == srs1.GetAuthorityCode(None)
+    if srs0.AutoIdentifyEPSG() == 0 and srs1.AutoIdentifyEPSG() == 0:
+        return srs0.GetAuthorityCode(None) == srs1.GetAuthorityCode(None)
+    else:
+        # TODO: this is not good!
+        try:
+            return srs0.export() == srs1.export()
+        except AttributeError:
+            return srs0.ExportToWkt() == srs1.ExportToWkt()
+
+
 
 
 def get_utm_zone_from_wgs84(wkt, lon, lat):

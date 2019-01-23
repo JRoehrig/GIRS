@@ -1,11 +1,7 @@
-try:
-    from setuptools import setup
-except ImportError:
-    from distutils.core import setup
-
+from setuptools import setup, find_packages
 NAME = 'girs'
 
-VERSION = '0.0.1'
+VERSION = '0.0.2'
 
 DESCRIPTION = 'gdal/ogr wrapper'
 
@@ -33,10 +29,10 @@ setup(
     url='http://warsa.de/girs/',
     author='Jackson Roehrig',
     author_email='Jackson.Roehrig@th-koeln.de',
-	license='MIT',
-	classifiers=CLASSIFIERS,
-    install_requires=['numpy', 'scipy', 'pandas', 'gdal', 'matplotlib', 'pillow'],
-    packages=['girs'],
+    license='MIT',
+    classifiers=CLASSIFIERS,
+    install_requires=['numpy', 'scipy', 'pandas', 'gdal', 'matplotlib'],
+    packages=find_packages(),
     scripts=[]
 )
 

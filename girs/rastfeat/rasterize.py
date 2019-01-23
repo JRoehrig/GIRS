@@ -1,3 +1,9 @@
+from __future__ import division
+from __future__ import print_function
+from builtins import str
+from builtins import range
+from past.builtins import basestring
+from past.utils import old_div
 import numbers
 import numpy as np
 from osgeo import gdal, ogr, gdal_array
@@ -84,7 +90,7 @@ def rasterize_layers(layers, **kwargs):
         output_raster.set_array(array=arr, band_number=bn)
 
     for ilyr, lyr in enumerate(layers):
-        gdal.RasterizeLayer(output_raster.dataset, range(ilyr+1, ilyr+2), lyr, None, None, burn_values=burn_values,
+        gdal.RasterizeLayer(output_raster.dataset, list(range(ilyr+1, ilyr+2)), lyr, None, None, burn_values=burn_values,
                             options=options)
 
     output_raster.dataset.FlushCache()
@@ -173,7 +179,7 @@ def rasterize_layers_by_field(layers, field_names, **kwargs):
             raise Exception('rasterize_layer: no value found for field "{}"'.format(str(field_names[ilyr])))
         field_values_list.append(field_values)
 
-    burn_values = np.array([fv for field_values in field_values_list for fv in field_values.keys()])
+    burn_values = np.array([fv for field_values in field_values_list for fv in list(field_values.keys())])
     sequential = not np.issubdtype(burn_values.dtype, np.number)
     if sequential:
         burn_values_map = {k+1: v for k, v in enumerate(set(burn_values.tolist()))}
@@ -182,7 +188,7 @@ def rasterize_layers_by_field(layers, field_names, **kwargs):
 
     raster_parameters = get_raster_parameters(raster_parameters=raster_parameters, layers=layers,
                                               pixel_size=pixel_size, nodata=nodata,
-                                              burn_values=burn_values_map.values())
+                                              burn_values=list(burn_values_map.values()))
     array_out = np.empty((raster_parameters.number_of_bands,
                           raster_parameters.RasterYSize, raster_parameters.RasterXSize))
 
@@ -228,6 +234,7 @@ def get_raster_parameters(raster_parameters, layers, pixel_size, nodata, burn_va
         if not isinstance(raster_parameters, RasterParameters):
             rst = raster_parameters
             raster_parameters = rst.get_parameters()
+
         if not srs.is_same_srs(raster_parameters.get_coordinate_system(), layers[0].GetSpatialRef()):
             msg = 'Raster and layer are not in the same coordinate system: \n\t{}, \n\t{}'.format(
                 raster_parameters.get_coordinate_system(), srs.export(layers[0].GetSpatialRef(), fmt='wkt'))
@@ -238,7 +245,8 @@ def get_raster_parameters(raster_parameters, layers, pixel_size, nodata, burn_va
             msg = "Raster does not intersect the layer: no rasterization possible."
             raise TypeError(msg)
         return raster_parameters
-    except AttributeError:
+    except AttributeError as e:
+        print(e)
         pass
 
     number_of_bands = len(layers)
@@ -250,7 +258,7 @@ def get_raster_parameters(raster_parameters, layers, pixel_size, nodata, burn_va
     if not pixel_size:
         pixel_size = max(dx, dy) / 100.0
         pixel_size = (pixel_size, pixel_size)
-    nx, ny = int(dx / pixel_size[0]), int(dy / pixel_size[1])
+    nx, ny = int(old_div(dx, pixel_size[0])), int(old_div(dy, pixel_size[1]))
     geo_trans = [xmin, pixel_size[0], 0, ymax, 0, -pixel_size[1]]
 
     burn_values = np.array(burn_values)

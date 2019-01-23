@@ -1,10 +1,17 @@
+from __future__ import division
+from __future__ import print_function
+from __future__ import absolute_import
+from builtins import range
+from past.builtins import basestring
+from past.utils import old_div
+from builtins import object
 import zipfile
 import numpy as np
 import matplotlib.pyplot as plt
 from osgeo import gdal, gdal_array
 from osgeo.gdalconst import GA_ReadOnly, GA_Update
 from girs.geom.envelope import merge_envelopes
-import parameter
+from . import parameter
 
 # ===================== use Python Exceptions =================================
 gdal.UseExceptions()
@@ -192,7 +199,7 @@ class Raster(object):
         """
         array = self.get_array(band_number, mask=mask, scale=scale)
         if np.ma.all(array) is np.ma.masked:
-            print 'Empty array: nothing to show'
+            print('Empty array: nothing to show')
         else:
             plt.imshow(array)
             if plot:
@@ -207,8 +214,8 @@ class Raster(object):
         :param plot:
         :return:
         """
-        for ax, band_number in axes_dict.items():
-            if isinstance(band_number, (int, long)):
+        for ax, band_number in list(axes_dict.items()):
+            if isinstance(band_number, int):
                 array = self.get_array(band_number, mask=mask, scale=scale)
             else:
                 array = self.get_arrays(band_number, mask=mask, scale=scale)
@@ -273,7 +280,7 @@ class Raster(object):
         :rtype: raster type or list of raster types
         """
         if band_number == 'all':
-            band_number = range(1, self.get_band_count() + 1)
+            band_number = list(range(1, self.get_band_count() + 1))
         try:
             return [self.dataset.GetRasterBand(i).GetNoDataValue() for i in band_number]
         except TypeError:
@@ -326,7 +333,7 @@ class Raster(object):
         :rtype: int or list of int
         """
         if band_number == 'all':
-            band_number = range(1, len(band_number) + 1)
+            band_number = list(range(1, len(band_number) + 1))
         try:
             return [self.dataset.GetRasterBand(i).DataType for i in band_number]
         except TypeError:
@@ -352,7 +359,7 @@ class Raster(object):
         row_size, col_size = band.YSize, band.XSize
         block_sizes = band.GetBlockSize()
         row_block_size, col_block_size = block_sizes[1], block_sizes[0]
-        col_range = range(0, col_size, col_block_size)
+        col_range = list(range(0, col_size, col_block_size))
         for i_row in range(0, row_size, row_block_size):
             n_rows = row_block_size if i_row + row_block_size < row_size else row_size - i_row
             for i_col in col_range:
@@ -383,7 +390,7 @@ class Raster(object):
         if not n_rows:
             n_rows = self.dataset.RasterYSize
         if band_number == 'all':
-            band_number = range(1, self.get_band_count() + 1)
+            band_number = list(range(1, self.get_band_count() + 1))
         try:
             arrays = np.empty((len(band_number), n_rows, n_cols))
             for i, bn in enumerate(band_number):
@@ -451,7 +458,7 @@ class Raster(object):
             :key drivername: short driver name
         :return:
         """
-        output_raster = kwargs.pop('output_raster', None)
+        output_raster = kwargs.pop('output_raster', 'MEM')
         drivername = kwargs.pop('drivername', 'Memory')
         if output_raster:
             target = output_raster
@@ -511,6 +518,21 @@ class Raster(object):
         :return:
         """
         return pixel_to_world(self.get_geotransform(), x, y)
+
+    def get_pixel_centroid_coordinates(self):
+        """
+
+        :return:
+        """
+        dx, dy = self.get_pixel_size()
+        dy = -dy
+        nc, nr = self.get_raster_size()
+        tr = self.get_geotransform()
+        arr = np.concatenate([x.reshape(nr, nc, 1) for x in np.indices((nr, nc))][::-1], 2).astype(np.float)
+        arr[:][:] *= np.array([dx, dy])
+        arr[:][:] += np.array([tr[0], tr[3]])
+        arr[:][:] += np.array([dx / 2.0, dy / 2.0])
+        return arr
 
     def get_centroid_world_coordinates(self):
         """Return the raster centroid in world coordinates
@@ -678,7 +700,7 @@ class RasterWriter(RasterEditor):
             else:
                 try:
                     drv = gdal.GetDriverByName(drivername)
-                except TypeError, e:
+                except TypeError as e:
                     if not isinstance(drivername, gdal.Driver):
                         raise e
                     drv = drivername
@@ -692,7 +714,7 @@ class RasterWriter(RasterEditor):
             filename = self.get_filename()
             self.dataset = drv.Create(filename, raster_parameters.RasterXSize, raster_parameters.RasterYSize,
                                       n_bands, dt)
-        except RuntimeError, e:
+        except RuntimeError as e:
             msg = '{} or raster {} is being eventually used (locked)'.format(e.message, self.filename)
             raise RuntimeError(msg)
         self.dataset.SetGeoTransform(raster_parameters.geo_trans)
@@ -767,7 +789,7 @@ def create_gifs(output_filename, *args, **kwargs):
         except AttributeError:
             r = arg
         array = r.get_array(mask=True, scale=False)
-        array = (array - a_min) / (a_max - a_min)
+        array = old_div((array - a_min), (a_max - a_min))
         array = cm(array)
         img = Image.fromarray((array * 255).astype('uint8'))
         img = img.resize((img.size[0] * resize, img.size[1] * resize))
@@ -879,7 +901,7 @@ def scale_array(array):
     def scale(a):
         array_min = np.amin(a)
         array_max = np.amax(a)
-        return (a - array_min) / (array_max - array_min)
+        return old_div((a - array_min), (array_max - array_min))
 
     if len(array.shape) > 2:  # ndim does not work for masked arrays
         for i in range(len(array)):

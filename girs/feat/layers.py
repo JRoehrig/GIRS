@@ -1,3 +1,9 @@
+from __future__ import print_function
+from builtins import zip
+from builtins import str
+from builtins import range
+from past.builtins import basestring
+from builtins import object
 import os
 import collections
 import numpy as np
@@ -7,6 +13,7 @@ from abc import ABCMeta
 from osgeo import gdal, ogr, osr
 from girs import srs
 from girs.feat.geom import is_topology_2d, is_topology_0d, geometries_to_geometry_collection
+from future.utils import with_metaclass
 ogr.UseExceptions()
 # ogr.DontUseExceptions()
 
@@ -162,7 +169,7 @@ def _remove_data_frame_geometry_column(df):
     idx = _get_data_frame_geometry_indices(df)
     if idx:
         columns = df.columns
-        df.columns = range(len(columns))
+        df.columns = list(range(len(columns)))
         columns = [c for c in columns if c not in columns[idx]]
         for c in sorted(idx, reverse=True):
             del df[c]
@@ -354,7 +361,7 @@ class FeatDrivers(object):
         :param drivername:
         :return:
         """
-        for extension, drivernames in FeatDrivers._extension_to_driver_name.items():
+        for extension, drivernames in list(FeatDrivers._extension_to_driver_name.items()):
             if drivername in drivernames:
                 return extension
         return None
@@ -375,7 +382,7 @@ class FieldDefinition (object):
         ogr.OFTDate: datetime.date,
         ogr.OFTTime: datetime.time,
         ogr.OFTDateTime: datetime.datetime,
-        long: long,  # FID has type long
+        int: int,  # FID has type long
         DataFrameFeature: object
     }
 
@@ -469,7 +476,7 @@ class FieldDefinition (object):
 
 
 
-class LayersSet(object):
+class LayersSet(with_metaclass(ABCMeta, object)):
     """`LayersSet` is the basis class for all layers subclasses (read, update, and write).
 
     Many methods in `LayersSet` apply to a specific layer number, which is defined by the parameter
@@ -490,7 +497,6 @@ class LayersSet(object):
         - LayersWriter
 
     """
-    __metaclass__ = ABCMeta
 
     def __init__(self):
         """Initialize the abstract class by setting self.dataset = None
@@ -531,7 +537,7 @@ class LayersSet(object):
         """
         pd.set_option("display.width", width)
         pd.set_option("display.max_rows", max_rows)
-        print self.data_frame(layer_number=layer_number)
+        print(self.data_frame(layer_number=layer_number))
         pd.reset_option("display.width")
         pd.reset_option("display.max_rows")
 
@@ -561,7 +567,7 @@ class LayersSet(object):
         filter parameters follow the same order of the list in `ffields`.
 
         :param target: file name. Default on memory
-        :param kwargs:
+        :param **kwargs:
             ofields: name, list of names, list of (name, new name), dictionary {layer number: name},
                 dictionary {layer number: list of names}, or dictionary {layer number: list of (name, new name)}
             filter: filter function
@@ -575,7 +581,7 @@ class LayersSet(object):
 
         number_of_layers = self.dataset.GetLayerCount()
         layers_dict = {layer_number: [None]*3 for layer_number in range(number_of_layers)}
-        for k, parameters_list in kwargs.items():
+        for k, parameters_list in list(kwargs.items()):
             if k.startswith('ofields'):
                 idx = 0
             elif k.startswith('filter'):
@@ -633,7 +639,7 @@ class LayersSet(object):
                         else:
                             o_fields_names[fn[0]] = fn[1]
                     ofields_indices = [ld_in.GetFieldIndex(fn[0]) for fn in o_fields]
-                except RuntimeError, e:
+                except RuntimeError as e:
                     msg = 'Error in ofields ({}): {}'.format(', '.join(str(f) for f in o_fields), str(e.message))
                     raise RuntimeError(msg)
                 if -1 in ofields_indices:
@@ -644,7 +650,7 @@ class LayersSet(object):
                         msg = 'Output field {} does not exist'.format(fn)
                     raise ValueError(msg)
             else:
-                ofields_indices = range(ld_in.GetFieldCount())
+                ofields_indices = list(range(ld_in.GetFieldCount()))
                 o_fields_names = [ld_in.GetFieldDefn(i).GetName() for i in ofields_indices]
                 o_fields_names = {fn: fn for fn in o_fields_names}
             # Get filter fields indices
@@ -740,13 +746,13 @@ class LayersSet(object):
         column_name_geo = DataFrameFeature.geometry_fieldname
         column_name_fid = 'FID'
         names = [column_name_fid, column_name_geo]
-        types = [long, DataFrameFeature]
+        types = [int, DataFrameFeature]
         if nf > 0:
             fds = [FieldDefinition.from_ogr(ld.GetFieldDefn(i)) for i in range(ld.GetFieldCount())]
-            names0, types0 = zip(*[[fd.name, fd.oft_type] for fd in fds])
+            names0, types0 = list(zip(*[[fd.name, fd.oft_type] for fd in fds]))
             names += names0
             types += types0
-        names_types = collections.OrderedDict(zip(names, types))
+        names_types = collections.OrderedDict(list(zip(names, types)))
         # Retrieve values from layer
         ogr_layer = self.get_layer(layer_number)
         dfl = DataFrameLayer(self, layer_number)
@@ -850,12 +856,12 @@ class LayersSet(object):
                 feature.SetGeometry(ogr.CreateGeometryFromWkb(geom))
             except RuntimeError:
                 feature.SetGeometry(ogr.CreateGeometryFromWkt(geom))
-        fieldnames_in = kwargs.keys()
+        fieldnames_in = list(kwargs.keys())
         for k in fieldnames_in:
             try:
                 feature.SetField(k, kwargs[k])
-            except (NotImplementedError, RuntimeError), e:
-                print k, kwargs[k], type(kwargs[k])
+            except (NotImplementedError, RuntimeError) as e:
+                print(k, kwargs[k], type(kwargs[k]))
                 raise e
         ldf = lyr.GetLayerDefn()
         for i in range(ldf.GetFieldCount()):
@@ -1003,10 +1009,10 @@ class LayersSet(object):
         feat_list = [(feat.GetFID(), [feat.GetField(fn) for fn in field_numbers]) for feat in ly]
         ly.ResetReading()
         if feat_list:
-            feat_list, values_list = zip(*feat_list)
+            feat_list, values_list = list(zip(*feat_list))
         else:
             feat_list, values_list = list(), list()
-        values_list = zip(*values_list)
+        values_list = list(zip(*values_list))
         df = pd.DataFrame({field_names[i]: v for i, v in enumerate(values_list)}, index=feat_list,
                           columns=[field_names[i] for i in range(len(values_list))])
         df.index.name = 'FID'
@@ -1077,7 +1083,7 @@ class LayersSet(object):
         :return: LayersWriter with the new field names
         """
         field_x_dict = {}
-        for field_x in [f for f in kwargs.keys() if f.startswith('fields')]:
+        for field_x in [f for f in list(kwargs.keys()) if f.startswith('fields')]:
             field_x_dict[field_x] = kwargs.pop(field_x)
         if not field_x_dict:
             msg = 'No parameter starting with field found: {}'.format(sorted(kwargs.keys()))
@@ -1088,11 +1094,11 @@ class LayersSet(object):
             target = ''
         if target and not os.path.exists(os.path.dirname(target)):
             os.makedirs(os.path.dirname(target))
-        lrs = LayersWriter(target)
+        lrs = LayersWriter(source=target)
 
         number_of_layers = self.dataset.GetLayerCount()
         layers_dict = dict()
-        for field_x, fieldname_dict in field_x_dict.items():
+        for field_x, fieldname_dict in list(field_x_dict.items()):
             if not field_x[-1].isdigit():
                 layer_number0, field_x = 0, field_x + '0'
             else:
@@ -1145,7 +1151,7 @@ class LayersSet(object):
         ly.ResetReading()
         feat_list = [(feat.GetFID(), getattr(feat.GetGeometryRef(), method)()) for feat in ly]
         ly.ResetReading()
-        feat_list, values_list = zip(*feat_list)
+        feat_list, values_list = list(zip(*feat_list))
         sr = pd.Series(values_list, index=feat_list)
         sr.index.name = 'FID'
         sr.name = name
@@ -1205,8 +1211,8 @@ class LayersSet(object):
             msg = 'Unknown geometry format {}: valid format are "wkt" or "wkb"'.format(geometry_format)
             raise ValueError(msg)
         ly.ResetReading()
-        feat_list, values_list = zip(*feat_list)
-        values_list = zip(*values_list)
+        feat_list, values_list = list(zip(*feat_list))
+        values_list = list(zip(*values_list))
         df = pd.DataFrame({field_names[i]: v for i, v in enumerate(values_list)}, index=feat_list, columns=field_names)
         df.index.name = 'FID'
         return df
@@ -1224,7 +1230,7 @@ class LayersSet(object):
         fmt = fmt.lower()
         geo_formats = {'gml': 'ExportToGML', 'isowkb': 'ExportToIsoWkb', 'isowkt': 'ExportToIsoWkt',
                        'json': 'ExportToJson', 'kml': 'ExportToKML', 'wkb': 'ExportToWkb', 'wkt': 'ExportToWkt'}
-        if fmt not in geo_formats.keys():
+        if fmt not in list(geo_formats.keys()):
             msg = 'Format {} unknown'.format(str(fmt))
             raise ValueError(msg)
         sr = self._get_geometries('GetBoundary', 'boundary', layer_number=layer_number)
@@ -1243,7 +1249,7 @@ class LayersSet(object):
         fmt = fmt.lower()
         geo_formats = {'gml': 'ExportToGML', 'isowkb': 'ExportToIsoWkb', 'isowkt': 'ExportToIsoWkt',
                        'json': 'ExportToJson', 'kml': 'ExportToKML', 'wkb': 'ExportToWkb', 'wkt': 'ExportToWkt'}
-        if fmt not in geo_formats.keys():
+        if fmt not in list(geo_formats.keys()):
             msg = 'Format {} unknown'.format(str(fmt))
             raise ValueError(msg)
         return self._get_geometries(geo_formats[fmt], DataFrameFeature.geometry_fieldname, layer_number=layer_number)
@@ -1293,7 +1299,7 @@ class LayersSet(object):
         return self._get_geometries('GetGeometryType', 'geom. type', layer_number=layer_number)
 
     def get_geometries_m(self, layer_number=0):
-        return self._get_geometries('GetM', 'x', layer_number=layer_number)
+        return self._get_geometries('GetM', 'm', layer_number=layer_number)
 
     def get_geometries_x(self, layer_number=0):
         return self._get_geometries('GetX', 'x', layer_number=layer_number)
@@ -1468,7 +1474,7 @@ class LayersSet(object):
             sr_out = kwargs.pop('srs', None)
         if not sr_out:
             keys = ['epsg', 'epsga', 'erm', 'esri', 'mi', 'ozi', 'pci', 'proj4', 'url', 'usgs', 'wkt', 'xml']
-            sr_out = [srs.get_srs(**{k: kwargs.pop(k, None)}) for k in keys if k in kwargs.keys()][0]
+            sr_out = [srs.get_srs(**{k: kwargs.pop(k, None)}) for k in keys if k in list(kwargs.keys())][0]
         if not sr_out:
             return None
 
@@ -1690,7 +1696,7 @@ class LayersReader(LayersSet):
         super(LayersReader, self).__init__()
         if drivername:
             drv = ogr.GetDriverByName(drivername)
-            drv.Open(source, 0)
+            self.dataset = drv.Open(source, 0)
         else:
             self.dataset = ogr.Open(source, 0)
         if self.dataset is None:
@@ -1698,13 +1704,11 @@ class LayersReader(LayersSet):
             raise ValueError(msg)
 
 
-class LayersEditor(LayersSet):
+class LayersEditor(with_metaclass(ABCMeta, LayersSet)):
     """`LayersEditor` is an abstract class that inherits from `LayersSet` and is basis class of `LayersUpdate` and
     `LayersWrite`. It contains methods to edit an existing or new dataset.
 
     """
-
-    __metaclass__ = ABCMeta
 
     def __init__(self):
         """Initializes the upper class
@@ -1727,7 +1731,7 @@ class LayersEditor(LayersSet):
         for fd in field_definitions:
             try:
                 ly.CreateField(fd.to_ogr())
-            except TypeError, e:
+            except TypeError as e:
                 ly.CreateField(fd)
         return ly
 
@@ -1775,7 +1779,7 @@ class LayersEditor(LayersSet):
         :param kwargs: the key starting with `fields`
         :return:
         """
-        fields_dict = {int(k[6:]) if k[6:] else 0: v for k, v in kwargs.items() if k.lower().startswith('fields')}
+        fields_dict = {int(k[6:]) if k[6:] else 0: v for k, v in list(kwargs.items()) if k.lower().startswith('fields')}
         for layer_number in sorted(fields_dict.keys()):
             ly = self.get_layer(layer_number)
             try:
@@ -1809,6 +1813,57 @@ class LayersEditor(LayersSet):
             for idx in sorted([i for i in self.get_field_numbers(field_names=field_names, layer_number=layer_number)
                                if i > -1], reverse=True):
                 ly.DeleteField(idx)
+
+    def delete_features(self, **kwargs):
+        """
+        :param kwargs:
+            filter: filter function
+            ffields: list of field names to apply the filter function, or a single field name
+        """
+        number_of_layers = self.dataset.GetLayerCount()
+        layers_dict = {layer_number: [None]*3 for layer_number in range(number_of_layers)}
+        for k, parameters_list in list(kwargs.items()):
+            if k.startswith('filter'):
+                idx = 0
+            elif k.startswith('ffields'):
+                idx = 1
+            else:
+                msg = 'option {} does not exist. Options are filter, and ffields'.format(k)
+                raise ValueError(msg)
+            if not k[-1].isdigit():
+                layer_number = 0
+                k = k + '0'
+            else:
+                f = k
+                n = ''
+                while f and f[-1].isdigit():
+                    n = f[-1] + n
+                    f = f[:-1]
+                layer_number = int(n)
+            if layer_number >= number_of_layers:
+                msg = 'field {}: layer {} greater then the maximum number of layers'.format(k, str(layer_number))
+                raise ValueError(msg)
+            layers_dict[layer_number][idx] = parameters_list
+
+        for ilc in range(number_of_layers):
+            ly_in = self.dataset.GetLayer(ilc)
+            ld_in = ly_in.GetLayerDefn()
+            parameters = layers_dict[ilc]
+            f_filter = parameters[0]
+            f_fields = parameters[1]
+            # Get filter fields indices
+            if isinstance(f_fields, basestring):
+                f_fields = [f_fields]
+            ffields_indices = sorted([ld_in.GetFieldIndex(fn) if fn != 'FID' else 'FID' for fn in f_fields])
+            if -1 in ffields_indices:
+                msg = 'Filter field {} does not exist'.format(f_fields[ffields_indices.index(-1)])
+                raise ValueError(msg)
+
+            for feat in ly_in:
+                feat_id = feat.GetFID()
+                if f_filter and f_filter(*[feat_id if idx == 'FID' else feat.GetField(idx) for idx in ffields_indices]):
+                    ly_in.DeleteFeature(feat_id)
+            ly_in.ResetReading()
 
 
 class LayersUpdate(LayersEditor):
@@ -1888,7 +1943,7 @@ class LayersWriter(LayersEditor):
 
         for parameters in args:
             n = len(parameters)
-            name = parameters[0] if parameters[0] is not None else ''
+            name = parameters[0] if parameters is not None else ''
             geom = parameters[1]
             prj = parameters[2] if n > 2 else None
             field_definitions0 = parameters[3] if n > 3 else None
@@ -1917,7 +1972,7 @@ def _get_unique_field_names(field_names):
     :return: list of field names without duplicates
     """
     import collections
-    repeated_fieldnames = {c: -2 for c, count in collections.Counter(field_names).items() if count > 1}
+    repeated_fieldnames = {c: -2 for c, count in list(collections.Counter(field_names).items()) if count > 1}
     new_filed_names = list()
     for field_name in field_names:
         if field_name in repeated_fieldnames:

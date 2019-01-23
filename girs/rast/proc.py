@@ -1,3 +1,7 @@
+from __future__ import division
+from builtins import str
+from builtins import range
+from past.utils import old_div
 import numpy as np
 from osgeo import gdal, gdal_array
 from girs.rast.parameter import RasterParameters
@@ -125,7 +129,7 @@ def calculate(calc, **kwargs):
     driver = get_driver(output_raster, driver)
     driver = driver.ShortName
 
-    r = RasterReader(kwargs.values()[0])
+    r = RasterReader(list(kwargs.values())[0])
 
     # Separate list of bands in single calculations
     calc = _parse_range_to_list(calc, r.get_band_count())
@@ -184,10 +188,10 @@ def resample(input_raster, pixel_sizes, resample_alg=gdal.GRA_NearestNeighbour, 
 
     len_x = x_max-x_min
     len_y = y_max-y_min
-    u_max, v_max = int(len_x/pixel_width), int(len_y/pixel_height)
-    if ((len_x - u_max * pixel_width) / pixel_width) > 0.5:
+    u_max, v_max = int(old_div(len_x,pixel_width)), int(old_div(len_y,pixel_height))
+    if (old_div((len_x - u_max * pixel_width), pixel_width)) > 0.5:
         u_max += 1
-    if ((len_y - v_max * pixel_height) / pixel_height) > 0.5:
+    if (old_div((len_y - v_max * pixel_height), pixel_height)) > 0.5:
         v_max += 1
 
     gt_out = list(input_raster.get_geotransform())  # make it mutable
@@ -302,7 +306,7 @@ def _get_symbol_and_masked_arrays(calc, symbol_dict):
         symbol = key + band
         if symbol and symbol not in result_dict:
             r = RasterReader(symbol_dict[key])
-            result_dict[symbol] = r.get_array_masked(int(band) if band != '' else 1)
+            result_dict[symbol] = r.get_array(int(band) if band != '' else 1, mask=True)
     return result_dict
 
 
