@@ -1,22 +1,21 @@
 from setuptools import setup, find_packages
 NAME = 'girs'
 
-VERSION = '0.0.2'
+VERSION = '0.1.0'
 
 DESCRIPTION = 'gdal/ogr wrapper'
 
 LONG_DESCRIPTION = 'gdal/ogr wrapper'
 
 CLASSIFIERS = [  # https://pypi.python.org/pypi?:action=list_classifiers
-    'Development Status :: 3 - Alpha',
+    'Development Status :: 4 - Beta',
     'Environment :: Console',
     'Intended Audience :: Science/Research',
     'License :: OSI Approved :: MIT License',
     'Natural Language :: English',
     'Operating System :: OS Independent',
     'Programming Language :: Python :: 2.7',
-    'Programming Language :: Cython',
-    'Programming Language :: C++',
+    'Programming Language:: Python:: 3',
     'Topic :: Scientific/Engineering :: GIS'
 ]
 
