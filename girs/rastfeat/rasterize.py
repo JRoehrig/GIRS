@@ -6,7 +6,7 @@ from past.builtins import basestring
 from past.utils import old_div
 import numbers
 import numpy as np
-from osgeo import gdal, ogr, gdal_array
+from osgeo import gdal, ogr, gdal_array, gdalconst
 from girs import srs
 from girs.geom.envelope import is_intersect_envelope
 from girs.rast.parameter import RasterParameters
@@ -246,7 +246,6 @@ def get_raster_parameters(raster_parameters, layers, pixel_size, nodata, burn_va
             raise TypeError(msg)
         return raster_parameters
     except AttributeError as e:
-        print(e)
         pass
 
     number_of_bands = len(layers)
@@ -285,7 +284,16 @@ def get_raster_parameters(raster_parameters, layers, pixel_size, nodata, burn_va
                     break
             assert found
     assert min_type <= nodata <= max_type
-    data_types = gdal_array.NumericTypeCodeToGDALTypeCode(burn_values.dtype)
+    if issubclass(burn_values.dtype.type, np.int64):
+        data_types = gdalconst.GDT_Int32
+    elif issubclass(burn_values.dtype.type, np.uint64):
+        data_types = gdalconst.GDT_UInt32
+    elif issubclass(burn_values.dtype.type, np.int0):
+        data_types = gdalconst.GDT_Int16
+    elif issubclass(burn_values.dtype.type, np.uint0):
+        data_types = gdalconst.GDT_Byte
+    else:
+        data_types = gdal_array.NumericTypeCodeToGDALTypeCode(burn_values.dtype.type)
     nodata = get_default_values(number_of_bands=number_of_bands, values=nodata)
     return RasterParameters(nx, ny, geo_trans, rs, number_of_bands, nodata, data_types, driver_short_name=None)
 

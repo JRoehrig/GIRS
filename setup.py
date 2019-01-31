@@ -1,7 +1,7 @@
 from setuptools import setup, find_packages
 NAME = 'girs'
 
-VERSION = '0.1.0'
+VERSION = '0.1.1'
 
 DESCRIPTION = 'gdal/ogr wrapper'
 
@@ -15,7 +15,7 @@ CLASSIFIERS = [  # https://pypi.python.org/pypi?:action=list_classifiers
     'Natural Language :: English',
     'Operating System :: OS Independent',
     'Programming Language :: Python :: 2.7',
-    'Programming Language:: Python:: 3',
+    'Programming Language :: Python :: 3',
     'Topic :: Scientific/Engineering :: GIS'
 ]
 
